@@ -27,38 +27,52 @@ class League:
     tier: int = 1
     # GitHub aynasındaki karşılığı (yalnızca 5 büyük lig için mevcut, oransız)
     mirror_slug: str | None = None
+    #: Gol modelinin birlikte kestirileceği lig grubu (ülke piramidi).
+    #: Spor Toto kuponları sık sık aynı ülkenin farklı seviyelerini karıştırır
+    #: (Süper Lig + 1. Lig). Takım güçleri ancak takımların birbiriyle bağlantılı
+    #: olduğu bir kümede karşılaştırılabilir; küme düşme/çıkma sayesinde aynı
+    #: ülkenin seviyeleri bağlantılıdır, farklı ülkeler değildir.
+    group: str = ""
+
+    @property
+    def group_key(self) -> str:
+        return self.group or self.code
 
 
 LEAGUES: dict[str, League] = {
     lg.code: lg
     for lg in [
         # --- Türkiye ---
-        League("T1", "Süper Lig", "Türkiye", "main", 1),
+        League("T1", "Süper Lig", "Türkiye", "main", 1, group="TR"),
+        # TFF 1. Lig. Kaynakta her sezon bulunmayabilir; yoksa indirme sessizce
+        # atlanır. Spor Toto listeleri Süper Lig ile 1. Lig'i sık karıştırdığı
+        # için varsa büyük kazanç, yoksa maliyeti yok.
+        League("T2", "1. Lig", "Türkiye", "main", 2, group="TR"),
         # --- İngiltere ---
-        League("E0", "Premier League", "İngiltere", "main", 1, "premier-league"),
-        League("E1", "Championship", "İngiltere", "main", 2),
-        League("E2", "League One", "İngiltere", "main", 3),
-        League("E3", "League Two", "İngiltere", "main", 4),
-        League("EC", "National League", "İngiltere", "main", 5),
+        League("E0", "Premier League", "İngiltere", "main", 1, "premier-league", group="EN"),
+        League("E1", "Championship", "İngiltere", "main", 2, group="EN"),
+        League("E2", "League One", "İngiltere", "main", 3, group="EN"),
+        League("E3", "League Two", "İngiltere", "main", 4, group="EN"),
+        League("EC", "National League", "İngiltere", "main", 5, group="EN"),
         # --- İspanya ---
-        League("SP1", "La Liga", "İspanya", "main", 1, "la-liga"),
-        League("SP2", "La Liga 2", "İspanya", "main", 2),
+        League("SP1", "La Liga", "İspanya", "main", 1, "la-liga", group="ES"),
+        League("SP2", "La Liga 2", "İspanya", "main", 2, group="ES"),
         # --- İtalya ---
-        League("I1", "Serie A", "İtalya", "main", 1, "serie-a"),
-        League("I2", "Serie B", "İtalya", "main", 2),
+        League("I1", "Serie A", "İtalya", "main", 1, "serie-a", group="IT"),
+        League("I2", "Serie B", "İtalya", "main", 2, group="IT"),
         # --- Almanya ---
-        League("D1", "Bundesliga", "Almanya", "main", 1, "bundesliga"),
-        League("D2", "2. Bundesliga", "Almanya", "main", 2),
+        League("D1", "Bundesliga", "Almanya", "main", 1, "bundesliga", group="DE"),
+        League("D2", "2. Bundesliga", "Almanya", "main", 2, group="DE"),
         # --- Fransa ---
-        League("F1", "Ligue 1", "Fransa", "main", 1, "ligue-1"),
-        League("F2", "Ligue 2", "Fransa", "main", 2),
+        League("F1", "Ligue 1", "Fransa", "main", 1, "ligue-1", group="FR"),
+        League("F2", "Ligue 2", "Fransa", "main", 2, group="FR"),
         # --- Diğer Avrupa (main düzeni) ---
         League("N1", "Eredivisie", "Hollanda", "main", 1),
         League("B1", "Jupiler Pro League", "Belçika", "main", 1),
         League("P1", "Primeira Liga", "Portekiz", "main", 1),
         League("G1", "Super League", "Yunanistan", "main", 1),
-        League("SC0", "Premiership", "İskoçya", "main", 1),
-        League("SC1", "Championship", "İskoçya", "main", 2),
+        League("SC0", "Premiership", "İskoçya", "main", 1, group="SC"),
+        League("SC1", "Championship", "İskoçya", "main", 2, group="SC"),
         # --- extra düzeni (tek dosya, tüm sezonlar) ---
         League("ARG", "Liga Profesional", "Arjantin", "extra", 1),
         League("AUT", "Bundesliga", "Avusturya", "extra", 1),
@@ -77,9 +91,17 @@ LEAGUES: dict[str, League] = {
     ]
 }
 
+def league_group(code: str | None) -> str | None:
+    """Lig kodundan gol modelinin kestirim grubunu döner."""
+    if not code:
+        return None
+    league = LEAGUES.get(str(code).upper())
+    return league.group_key if league else str(code).upper()
+
+
 #: Spor Toto kuponlarında en sık görülen ligler — varsayılan indirme kümesi.
 DEFAULT_LEAGUES = [
-    "T1", "E0", "E1", "SP1", "SP2", "I1", "I2", "D1", "D2",
+    "T1", "T2", "E0", "E1", "SP1", "SP2", "I1", "I2", "D1", "D2",
     "F1", "F2", "N1", "B1", "P1", "G1", "SC0",
 ]
 

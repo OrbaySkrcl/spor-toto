@@ -32,13 +32,13 @@ import requests
 from ..config import Settings
 from ..coupon.optimizer import budget_frontier, optimize_coupon
 from ..report import (
-    format_coupon,
-    format_frontier,
-    format_predictions,
+    format_coupon_mobile,
+    format_frontier_mobile,
+    format_predictions_mobile,
     format_quality,
     format_stats,
-    format_tables,
-    format_weekly,
+    format_tables_mobile,
+    format_weekly_mobile,
 )
 from ..storage import Database
 from ..teams import parse_coupon
@@ -197,7 +197,7 @@ class SporTotoBot:
         elif command == "/kolon":
             self._cmd_columns(chat_id, state, argument)
         elif command == "/tablo":
-            self.send(chat_id, format_tables(self.settings.coupon.column_price), monospace=True)
+            self.send(chat_id, format_tables_mobile(self.settings.coupon.column_price))
         elif command == "/guncelle":
             threading.Thread(target=self._cmd_update, args=(chat_id,), daemon=True).start()
         elif command == "/egit":
@@ -288,7 +288,7 @@ class SporTotoBot:
             return
         predictor = self.ensure_model(chat_id)
         predictions = predictor.predict([{"home": h, "away": a} for h, a in fixtures])
-        self.send(chat_id, format_predictions(predictions, show_components=True), monospace=True)
+        self.send(chat_id, format_predictions_mobile(predictions, title="TAHMİN"))
 
     def _cmd_coupon(self, chat_id: int, state: ChatState, argument: str) -> None:
         fixtures = parse_coupon(argument)
@@ -303,7 +303,7 @@ class SporTotoBot:
         predictor = self.ensure_model(chat_id)
         predictions = predictor.predict([{"home": h, "away": a} for h, a in fixtures])
         state.last_predictions = predictions
-        self.send(chat_id, format_predictions(predictions), monospace=True)
+        self.send(chat_id, format_predictions_mobile(predictions))
 
         price = self.settings.coupon.column_price
         budget = state.budget if state.columns is None else None
@@ -312,7 +312,7 @@ class SporTotoBot:
         plan = optimize_coupon(
             predictions, max_columns=state.columns, budget=budget, column_price=price
         )
-        self.send(chat_id, format_coupon(plan), monospace=True)
+        self.send(chat_id, format_coupon_mobile(plan))
         if len(fixtures) != self.settings.coupon.n_matches:
             self.send(
                 chat_id,
@@ -340,7 +340,7 @@ class SporTotoBot:
                 "Bu arada kendi listenizi 15 satır hâlinde gönderebilirsiniz.",
             )
             return
-        self.send(chat_id, format_weekly(predictions), monospace=True)
+        self.send(chat_id, format_weekly_mobile(predictions))
         self.send(
             chat_id,
             f"📋 <b>{len(predictions)} maç</b> tahmin edildi. "
@@ -374,7 +374,7 @@ class SporTotoBot:
             f"arasından en tahmin edilebilir {need} tanesi seçildi. Resmî liste "
             "için maçları alt alta gönderin.",
         )
-        self.send(chat_id, format_predictions(chosen), monospace=True)
+        self.send(chat_id, format_predictions_mobile(chosen))
 
         price = self.settings.coupon.column_price
         budget = state.budget if state.columns is None else None
@@ -383,7 +383,7 @@ class SporTotoBot:
         plan = optimize_coupon(
             chosen, max_columns=state.columns, budget=budget, column_price=price
         )
-        self.send(chat_id, format_coupon(plan), monospace=True)
+        self.send(chat_id, format_coupon_mobile(plan))
 
     def _cmd_quality(self, chat_id: int) -> None:
         predictor = self.ensure_model(chat_id)
@@ -478,7 +478,7 @@ class SporTotoBot:
             return
         price = self.settings.coupon.column_price
         plans = budget_frontier(state.last_predictions, price, max_columns=100_000)
-        self.send(chat_id, format_frontier(plans, price), monospace=True)
+        self.send(chat_id, format_frontier_mobile(plans, price))
 
     # -- otomatik tazeleme ------------------------------------------------
     def _auto_refresh_loop(self, interval_hours: float) -> None:
@@ -531,7 +531,7 @@ class SporTotoBot:
                 if not predictions:
                     log.info("Haftalık gönderim atlandı: yaklaşan maç yok")
                     continue
-                body = format_weekly(predictions)
+                body = format_weekly_mobile(predictions)
 
                 for chat_id in targets:
                     with db.connect() as conn:
@@ -546,7 +546,7 @@ class SporTotoBot:
                         except ValueError:
                             pass
                     self.send(chat_id, "📅 <b>Haftalık tahminler</b>")
-                    self.send(chat_id, body, monospace=True)
+                    self.send(chat_id, body)
                     db.mark_sent(chat_id)
                 log.info("Haftalık gönderim tamamlandı (%d abone)", len(targets))
             except Exception:

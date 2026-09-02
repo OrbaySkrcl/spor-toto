@@ -153,3 +153,27 @@ def test_stack_components_shapes(settings, synthetic_frame):
     assert set(stacks) == {"dc", "elo", "market", "form"}
     for values in stacks.values():
         assert values.shape == (len(rows), 3)
+
+
+def test_dixon_coles_covers_cross_division_matches(settings, synthetic_db):
+    """Aynı ülkenin farklı seviyeleri birlikte kestirilmeli.
+
+    Spor Toto listeleri Süper Lig ile 1. Lig'i sürekli karıştırır. Gol modeli
+    lig başına kestirilirse bu maçlarda hiçbir şey söyleyemez; ülke piramidi
+    birlikte kestirildiğinde küme düşme/çıkma iki seviyeyi bağlar.
+    """
+    from sportoto.config import LEAGUES, league_group
+
+    # T1 ve T2 aynı grupta olmalı, farklı ülkeler ayrı.
+    assert league_group("T1") == league_group("T2") == "TR"
+    assert league_group("E0") == league_group("E1") == "EN"
+    assert league_group("T1") != league_group("E0")
+    assert LEAGUES["SP2"].group_key == LEAGUES["SP1"].group_key
+
+
+def test_league_group_falls_back_to_code():
+    from sportoto.config import league_group
+
+    assert league_group("ARG") == "ARG"     # tek seviyeli lig kendi grubu
+    assert league_group("BİLİNMEYEN") == "BİLİNMEYEN"
+    assert league_group(None) is None

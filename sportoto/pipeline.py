@@ -23,7 +23,7 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
-from .config import Settings
+from .config import Settings, league_group
 from .features.elo import EloConfig, build_elo_history
 from .features.form import build_form_features
 from .models.dixon_coles import DixonColes, DixonColesFit
@@ -93,17 +93,25 @@ def fit_components(
     if played.empty:
         return models
 
-    # --- Dixon-Coles: lig başına ---
+    # --- Dixon-Coles: lig GRUBU başına ---
+    # Aynı ülkenin seviyeleri birlikte kestirilir. Takım güçleri yalnızca
+    # birbiriyle maç yapmış takımlar arasında karşılaştırılabilir; küme
+    # düşme/çıkma sayesinde bir ülkenin ligleri bağlantılı bir küme oluşturur.
+    # Bu olmadan Spor Toto'da çok sık görülen "Süper Lig takımı - 1. Lig takımı"
+    # eşleşmelerinde gol modeli hiçbir şey söyleyemez.
     cutoff = as_of - timedelta(days=DC_LOOKBACK_DAYS)
-    targets = leagues or sorted(played["league"].dropna().unique())
-    for code in targets:
-        subset = played[(played["league"] == code) & (played["date"] >= cutoff)]
-        if len(subset) < model_config.dc_min_matches:
-            continue
-        try:
-            models.dc[code] = engine.fit(subset, as_of=as_of, league=code)
-        except Exception as exc:
-            log.warning("Dixon-Coles kestirimi başarısız (%s): %s", code, exc)
+    recent = played[played["date"] >= cutoff].copy()
+    if leagues:
+        recent = recent[recent["league"].isin(leagues)]
+    if not recent.empty:
+        recent["_group"] = [league_group(c) for c in recent["league"]]
+        for group, subset in recent.groupby("_group"):
+            if len(subset) < model_config.dc_min_matches:
+                continue
+            try:
+                models.dc[group] = engine.fit(subset, as_of=as_of, league=group)
+            except Exception as exc:
+                log.warning("Dixon-Coles kestirimi başarısız (%s): %s", group, exc)
 
     # --- Sıralı Elo ve form modeli: tüm ligler birlikte ---
     labelled = played[played["y"] >= 0]
@@ -139,12 +147,12 @@ def component_probabilities(
     engine = models.dc_engine or DixonColes(
         xi=settings.model.dc_xi, max_goals=settings.model.dc_max_goals
     )
-    leagues = frame["league"].to_numpy()
+    groups = [league_group(c) for c in frame["league"].to_numpy()]
     homes = frame["home"].to_numpy()
     aways = frame["away"].to_numpy()
     min_team = settings.model.dc_min_team_matches
     for i in range(n):
-        fit = models.dc.get(leagues[i])
+        fit = models.dc.get(groups[i])
         if fit is None or not (fit.knows(homes[i]) and fit.knows(aways[i])):
             continue
         # Modele az maçla girmiş takımlar için kestirim güvenilmez.

@@ -80,3 +80,51 @@ kötü kupon üretir. RPS ve kalibrasyon tablosu eklendi.
 
 **Ders:** Metriği son hedefe göre seç. Hedef 15/15 ise, ölçülecek şey
 "olasılıkların ne kadar dürüst olduğu"dur, "kaç tane bildiği" değil.
+
+## 9. Konum tabanlı satır eşlemesi kırılgandır
+
+`prepare_frame` tarihe göre sıralama yapıyordu ve bir kuponun 15 maçı aynı
+tarihi paylaşıyordu. `sort_values` varsayılan olarak **kararsız** (quicksort)
+olduğu için bekleyen satırların göreli sırası bozuluyor, `.tail(n)` ile
+okunduğunda **15 maçın 14'ü yanlış maçın verisiyle** tahmin ediliyordu.
+Fenerbahçe–Beşiktaş'a Erzurumspor–Konyaspor'un rakamları atanıyordu.
+
+Sessiz bir hataydı: çıktı makul görünüyordu, hiçbir test düşmüyordu, yalnızca
+tahminler yanlış maçlara aitti.
+
+**Ders:** Bir veri çerçevesinden satır seçerken asla konuma güvenme. Açık bir
+kimlik taşı ve onunla geri eşle. Sıralamayı kararlı yapmak yardımcı olur ama
+tek başına yeterli bir güvence değildir — asıl güvence kimliktir.
+
+## 10. Kalibrasyon ile kullanım koşulları ayrışabilir
+
+Blend ağırlıkları, oranların **hep mevcut olduğu** geçmiş veride öğreniliyordu.
+Piyasa diğer bileşenleri sıfıra eziyordu. Kullanıcı kupon yapıştırdığında oran
+yoktu; geriye ağırlığı sıfır bileşenler kalıyor ve model **her maça
+%33/%33/%33** diyordu. Yani sistem, tam da kullanıldığı senaryoda çalışmıyordu.
+
+**Ders:** "Modeli hangi veriyle eğitiyorum" ile "hangi veriyle kullanacağım"
+aynı olmayabilir. Bir girdinin eğitimde her zaman, üretimde hiç bulunmadığı
+durumu ayrıca kestir ve test et. Burada çözüm, her bileşen kombinasyonu için
+ayrı profil fit etmek oldu.
+
+## 11. Bulanık arama "en yakın"ı döndürür, "doğru"yu değil
+
+Çözümleyici `"Zzz Kulubu XYZ"` sorgusuna %12 benzerlikle `"Team B"` cevabını
+veriyor, sistem de o takımın gücüyle güvenli görünen bir tahmin üretiyordu.
+Kullanıcı bunu fark edemezdi.
+
+**Ders:** Bulanık eşleştirmeye bir **kabul eşiği** koy. Eşiğin altında
+"bulamadım" de. Yanlış tanımak, tanımamaktan kötüdür; çünkü ilkinde kullanıcı
+uyarılmaz.
+
+## 12. Geniş tablolar telefonda okunmaz
+
+Terminal için tasarlanmış 76 karakterlik tablolar Telegram'da satır sarmasıyla
+okunamaz hâle geliyordu. Kullanıcı çıktıyı hiç anlamadı — hesap doğru olsa bile
+işe yaramıyordu.
+
+**Ders:** Çıktının hedef ortamını tasarım kısıtı say. Aynı veri için terminal
+(geniş, hizalı) ve telefon (dar, sarmalı, kalın vurgulu) ayrı biçimlendirici
+hak eder. Doğru hesap, okunmayan bir biçimde teslim edilirse teslim edilmemiş
+sayılır.

@@ -173,7 +173,31 @@ Takım adlarını nasıl yazdığınızın önemi yok — bot `Fatih Karagümrü
 `Karagumruk`, `RAMS Başakşehir`, `Manchester United`, `Man Utd` gibi
 varyantları tanır. Numaralar, tarihler ve saatler otomatik ayıklanır.
 
-Bot iki mesaj döner: olasılık tablosu ve optimize edilmiş kupon.
+Bot iki mesaj döner: olasılık listesi ve **ne işaretleyeceğinizi söyleyen**
+kupon talimatı:
+
+```
+🎫 KUPONUNUZ
+Kupon üzerinde aşağıdaki işaretleri yapın.
+
+1. Arsenal - Chelsea
+   ➜ işaretle: 1 — tutma %67
+
+2. Everton - Manchester United
+   ➜ işaretle: 1-2  (çift) — tutma %72
+...
+━━━━━━━━━━━━━━━━━━━━
+📋 8 tek · 5 çift · 2 üçlü
+💰 288 kolon = 1.440,00 TL
+
+🎯 TUTMA ŞANSINIZ
+   15/15        %0,14
+   13 ve üzeri  %6,60
+   12 ve üzeri  %19,14
+```
+
+**"tutma %"** = o maçta işaretlediklerinizden birinin çıkma olasılığı.
+Çift/üçlü işaretlerde bu oran yükselir ama kolon sayısı da artar.
 
 ### 🔹 Bütçe ayarlama
 
@@ -266,13 +290,21 @@ eski dağıtım çalışıyorsa Railway'de **Redeploy** deyin.
 Veri kaynağı fikstürleri genelde maçtan birkaç gün önce yayınlar. Ayrıca
 sezon aralarında (Haziran–Temmuz) hiç maç olmayabilir. `/guncelle` deneyin.
 
-### Takım adı bulunamadı uyarısı
-Bot tanımadığı takım için uyarı verir ama tahmini yine yapar (o maçta
-yalnızca zayıf bileşenler çalışır). Adı veri kaynağındaki hâline daha yakın
-yazmayı deneyin, ör. `Başakşehir` yerine `Istanbul Basaksehir`.
+### "⚠️ sınırlı veri" veya "takım tanınmadı" uyarısı
 
-TFF 1. Lig ve alt ligler kapsam dışıdır — ücretsiz kaynakta yoklar.
-Spor Toto listesinde çıkarlarsa o maçların tahmini zayıf olur.
+Bot tanımadığı bir takımı **rastgele başka bir takıma bağlamaz** — o maçı
+açıkça işaretler:
+
+| Uyarı | Anlamı | Ne yapmalı |
+|---|---|---|
+| `takım tanınmadı` | Bu takım veritabanında yok | Adı kaynaktaki hâline yakın yazmayı deneyin |
+| `⚠️ sınırlı veri` | Tahmin var ama dayanağı zayıf | O maça sistemde çift/üçlü vermeyi düşünün |
+| `veri yok` | Hiçbir model uygulanamadı | Tahmin üretilmedi, sayıları dikkate almayın |
+
+Optimizasyon bu maçları zaten daha riskli sayar ve önce onlara çift/üçlü verir.
+
+Kapsam: Süper Lig, TFF 1. Lig (kaynakta varsa) ve büyük Avrupa ligleri.
+Alt ligler ve amatör kategoriler ücretsiz kaynakta yoktur.
 
 ### Railway'de ücret uyarısı
 Bot 7/24 çalışır ve Railway'in ücretsiz kredisini zamanla tüketir.

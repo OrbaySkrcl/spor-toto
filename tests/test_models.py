@@ -193,3 +193,91 @@ def test_blend_round_trips_through_dict():
 def test_blend_predict_before_fit_raises():
     with pytest.raises(RuntimeError):
         LogPoolBlend().predict({"dc": np.full((3, 3), 1 / 3)})
+
+
+# --- blend profilleri: eksik bileşen dayanıklılığı ---
+def _profile_fixture(seed=7, n=1200):
+    """dc her zaman, market yalnızca eğitimde bulunan bir veri seti üretir."""
+    rng = np.random.default_rng(seed)
+    y = rng.integers(0, 3, n)
+    def informative(strength):
+        p = np.full((n, 3), (1.0 - strength) / 2.0)
+        p[np.arange(n), y] = strength
+        return p / p.sum(axis=1, keepdims=True)
+    return {
+        "dc": informative(0.55),
+        "elo": informative(0.50),
+        "market": informative(0.75),   # en güçlü sinyal, diğerlerini ezer
+    }, y
+
+
+def test_blend_fits_a_profile_for_each_component_subset():
+    probs, y = _profile_fixture()
+    blend = LogPoolBlend().fit(probs, y)
+    from sportoto.models.blend import profile_key
+
+    for subset in (["dc"], ["elo"], ["dc", "elo"], ["dc", "elo", "market"]):
+        assert profile_key(subset) in blend.profiles, subset
+
+
+def test_missing_component_does_not_collapse_to_uniform():
+    """Oran yokken model susmamalı.
+
+    Ağırlıklar oranların hep mevcut olduğu veride öğrenildiği için piyasa
+    diğerlerini sıfıra ezer. Kullanıcı kupon yapıştırdığında oran yoktur;
+    profiller olmasaydı havuz düzgün dağılıma düşer ve model bildiği maçlarda
+    bile %33/%33/%33 derdi.
+    """
+    probs, y = _profile_fixture()
+    blend = LogPoolBlend().fit(probs, y)
+    assert blend.weights["market"] > blend.weights["dc"]      # eğitimde piyasa baskın
+
+    n = len(y)
+    without_market = {
+        "dc": probs["dc"],
+        "elo": probs["elo"],
+        "market": np.full((n, 3), np.nan),
+    }
+    predicted = blend.predict(without_market)
+    assert predicted.sum(axis=1) == pytest.approx(np.ones(n), abs=1e-9)
+    spread = np.abs(predicted - 1.0 / 3.0).max(axis=1)
+    assert (spread > 0.02).mean() > 0.95, "oran yokken tahminler tekdüzeye düşüyor"
+    # Doğru sonuca verilen ortalama olasılık şansa göre belirgin yüksek olmalı.
+    assert predicted[np.arange(n), y].mean() > 0.45
+
+
+def test_weight_floor_keeps_every_component_usable():
+    probs, y = _profile_fixture()
+    blend = LogPoolBlend().fit(probs, y)
+    assert min(blend.weights.values()) >= blend.weight_floor - 1e-9
+    assert sum(blend.weights.values()) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_availability_reports_usable_components_per_row():
+    probs, y = _profile_fixture(n=300)
+    probs["market"][::2] = np.nan
+    blend = LogPoolBlend().fit(probs, y)
+    availability = blend.availability(probs)
+    assert len(availability) == 300
+    assert "market" not in availability[0]
+    assert "market" in availability[1]
+    assert "dc" in availability[0]
+
+
+def test_rows_without_any_component_stay_uniform_and_are_detectable():
+    probs, y = _profile_fixture(n=300)
+    blend = LogPoolBlend().fit(probs, y)
+    empty = {k: np.full((300, 3), np.nan) for k in probs}
+    predicted = blend.predict(empty)
+    assert predicted == pytest.approx(np.full((300, 3), 1 / 3), abs=1e-9)
+    assert all(row == [] for row in blend.availability(empty))
+
+
+def test_profiles_survive_dict_round_trip():
+    probs, y = _profile_fixture(n=600)
+    blend = LogPoolBlend().fit(probs, y)
+    restored = LogPoolBlend.from_dict(blend.to_dict())
+    assert restored.profiles == blend.profiles
+    n = len(y)
+    without = dict(probs, market=np.full((n, 3), np.nan))
+    np.testing.assert_allclose(restored.predict(without), blend.predict(without))

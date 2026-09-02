@@ -67,6 +67,13 @@ class MatchPrediction:
     matched_away: str | None = None
     match_confidence: float = 1.0
     date: str | None = None
+    #: Hiçbir model bileşeni bu maça uygulanamadıysa True. Olasılıklar o zaman
+    #: %33/%33/%33'tür ve bu bir tahmin değil, "bilmiyorum" demektir — çıktıda
+    #: gerçek bir tahminmiş gibi gösterilmemelidir.
+    no_data: bool = False
+    #: Tahmin üretildi ama dayanağı zayıf: takımlardan biri tanınmadı ya da
+    #: gol modeli uygulanamadı. Kullanıcı bu satıra daha az güvenmeli.
+    low_data: bool = False
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -188,7 +195,8 @@ class Predictor:
             return {}
         try:
             probe = LogPoolBlend().fit(
-                stack_components(train_rows), train_rows["y"].to_numpy()
+                stack_components(train_rows), train_rows["y"].to_numpy(),
+                fit_profiles=False,
             )
             probs = probe.predict(stack_components(test_rows))
         except Exception as exc:
@@ -270,9 +278,26 @@ class Predictor:
         for col in history.columns:
             if col not in pending.columns:
                 pending[col] = np.nan
-        combined = pd.concat([history, pending[history.columns]], ignore_index=True)
+        # Satırları konumla değil, açık bir kimlikle geri eşliyoruz.
+        # `prepare_frame` tarihe göre sıralama yapar; bekleyen maçların hepsi
+        # aynı tarihi paylaştığı için konum tabanlı bir seçim (ör. `.tail(n)`)
+        # onları birbirine karıştırır ve tahminler yanlış maça bağlanır.
+        history = history.copy()
+        history["_row_id"] = -1
+        pending = pending.copy()
+        pending["_row_id"] = np.arange(len(pending))
+        columns = list(history.columns)
+        combined = pd.concat([history, pending[columns]], ignore_index=True)
         prepared = prepare_frame(combined, self.settings)
-        target = prepared.tail(len(pending)).reset_index(drop=True)
+        target = (
+            prepared[prepared["_row_id"] >= 0]
+            .sort_values("_row_id", kind="mergesort")
+            .reset_index(drop=True)
+        )
+        if len(target) != len(pending):
+            raise RuntimeError(
+                f"Tahmin satırları eşleşmedi: {len(target)} ≠ {len(pending)}"
+            )
 
         # Sakatlık/ceza gibi elle girilen düzeltmeleri uygula. Bir kupon tek bir
         # haftanın maçlarından oluştuğu için en erken maç tarihi hepsi için
@@ -293,6 +318,12 @@ class Predictor:
                 if values is None or np.isnan(values[i]).any():
                     continue
                 components[name] = tuple(float(v) for v in values[i])
+            notes = list(warnings_per_row[i])
+            if not components:
+                notes.append(
+                    f"{row['home']} - {row['away']}: model bu maç için veri bulamadı "
+                    "(takımlar veritabanında yok veya çok az maç var)"
+                )
             out.append(
                 MatchPrediction(
                     home=fixtures[i].get("home", row["home"]),
@@ -305,7 +336,10 @@ class Predictor:
                     matched_home=row["home"],
                     matched_away=row["away"],
                     match_confidence=row.get("_confidence", 1.0),
-                    warnings=warnings_per_row[i],
+                    no_data=not components,
+                    low_data=bool(components)
+                    and (row.get("_unresolved", False) or "dc" not in components),
+                    warnings=notes,
                 )
             )
         return out
@@ -323,12 +357,19 @@ class Predictor:
             notes: list[str] = []
             home_match = self.resolver.resolve(str(fixture.get("home", "")))
             away_match = self.resolver.resolve(str(fixture.get("away", "")))
-            home = home_match.team or str(fixture.get("home", ""))
-            away = away_match.team or str(fixture.get("away", ""))
+            # Kabul eşiğinin altındaki eşleşmeyi kullanmak, alakasız bir takımın
+            # gücüyle tahmin üretmek demektir. O takımı bilinmeyen bırakırız:
+            # model onun için susar ve kullanıcı durumu görür.
+            home = home_match.team if home_match.usable else str(fixture.get("home", ""))
+            away = away_match.team if away_match.usable else str(fixture.get("away", ""))
+            unresolved = not (home_match.usable and away_match.usable)
 
             for label, match in (("Ev sahibi", home_match), ("Deplasman", away_match)):
-                if match.team is None:
-                    notes.append(f"{label} takım bulunamadı: {match.query!r}")
+                if not match.usable:
+                    notes.append(
+                        f"{label} takım tanınmadı: {match.query!r} "
+                        "— bu maç için veritabanında karşılık yok"
+                    )
                 elif not match.confident:
                     alts = ", ".join(t for t, _ in match.alternatives[:2])
                     notes.append(
@@ -349,6 +390,7 @@ class Predictor:
                     "odds_d": fixture.get("odds_d"),
                     "odds_a": fixture.get("odds_a"),
                     "_confidence": min(home_match.score, away_match.score),
+                    "_unresolved": unresolved,
                 }
             )
             warnings.append(notes)

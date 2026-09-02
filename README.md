@@ -260,6 +260,39 @@ penceresi zamana göre 70/30 bölünür, ağırlıklar ilk parçada öğrenilir,
 son parçada ölçülür, sonra ağırlıklar tüm pencereyle yeniden kestirilir.
 Kullanıcıya gösterilen yüzde bu ölçümden gelir.
 
+### Eksik bileşene dayanıklılık — "profiller"
+
+Ağırlıklar, bahis oranlarının **her zaman mevcut olduğu** geçmiş veride
+öğrenilir; piyasa en güçlü sinyal olduğu için diğerlerini neredeyse sıfıra
+ezer. Kullanıcı kupon listesini elle yapıştırdığında ise oran yoktur — geriye
+ağırlığı sıfıra yakın bileşenler kalır ve havuz "hiçbir bilgim yok" diyerek
+düzgün dağılıma (%33/%33/%33) düşer. Model, aslında bildiği maçlarda bile susar.
+
+Çözüm: tek ağırlık vektörü yerine **her bileşen kombinasyonu için ayrı bir
+profil** kestirilir. "Yalnızca dc+elo mevcut" profili tam da o iki bileşenle,
+gerçek sonuçlar üzerinde fit edilir; tahmin anında her maç kendi profilini
+kullanır. Ek güvence olarak ağırlıklara bir taban uygulanır.
+
+Gerçek veride etkisi: oran varken `market=0.83`, oran yokken aynı model
+`dc=0.84, elo=0.14` ağırlıklarına geçer.
+
+### Lig grupları
+
+Spor Toto listeleri aynı ülkenin farklı seviyelerini sürekli karıştırır
+(Süper Lig + 1. Lig). Takım güçleri yalnızca birbiriyle maç yapmış takımlar
+arasında karşılaştırılabilir; bu yüzden gol modeli lig başına değil **ülke
+piramidi başına** kestirilir (TR, EN, ES, IT, DE, FR, SC). Küme düşme/çıkma
+seviyeleri bağladığı için bu küme tutarlıdır. Lig başına kestirimde
+"Süper Lig takımı - 1. Lig takımı" maçlarında gol modeli hiçbir şey söyleyemezdi.
+
+### Bilinmeyen takım politikası
+
+Bulanık arama her zaman bir "en yakın" aday döndürür. %12 benzerlikle bulunan
+takımı kabul etmek, modelin tamamen alakasız bir takımın gücüyle güvenli
+görünen bir tahmin üretmesi demektir. Bu yüzden 0,45 altındaki eşleşmeler
+reddedilir; maç `sınırlı veri` olarak işaretlenir ve kullanıcıya söylenir.
+Tanımamak, yanlış tanımaktan iyidir.
+
 ### Sızıntı yok
 
 Bir maçın tahmininde kullanılan hiçbir şey o maçtan sonra bilinemez:
@@ -363,7 +396,7 @@ tutucudur — güncel değeri kontrol edip ayarlayın.
 
 ```bash
 pip install -r requirements.txt pytest
-python -m pytest tests/ -q          # 180 test
+python -m pytest tests/ -q          # 195 test
 ```
 
 Ağ olmadan çalışmak için sentetik kaynak yeterlidir:

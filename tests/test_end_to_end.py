@@ -323,3 +323,136 @@ def test_quality_survives_blend_reuse(trained):
     assert reloaded.quality["favourite_hit_rate"] == pytest.approx(
         report["quality"]["favourite_hit_rate"]
     )
+
+
+# --- satır hizalama: aynı tarihli maçlar karışmamalı ---
+def test_predictions_stay_aligned_with_input_order(trained):
+    """Her tahmin, kendi maçına ait olmalı.
+
+    `prepare_frame` tarihe göre sıralama yapar ve bir kuponun 15 maçı aynı
+    tarihi paylaşır. Satırlar konumla geri okunursa sıra karışır ve tahminler
+    sessizce yanlış maça bağlanır — kullanıcı bunu fark edemez.
+    """
+    _, predictor, _ = trained
+    teams = [chr(65 + i) for i in range(16)]
+    fixtures = [
+        {"home": f"Team {teams[i]}", "away": f"Team {teams[(i + 5) % 16]}", "league": "SYN1"}
+        for i in range(15)
+    ]
+    predictions = predictor.predict(fixtures)
+    assert len(predictions) == 15
+    for fixture, prediction in zip(fixtures, predictions):
+        assert prediction.home == fixture["home"]
+        assert prediction.matched_home == fixture["home"]
+        assert prediction.matched_away == fixture["away"]
+
+    # Tahminler birbirinden farklı olmalı; hepsi aynıysa hizalama şüphelidir.
+    assert len({round(p.p_home, 6) for p in predictions}) > 5
+
+
+def test_predictions_are_order_independent(trained):
+    """Aynı maç, listede nerede olursa olsun aynı tahmini almalı."""
+    _, predictor, _ = trained
+    base = [
+        {"home": "Team A", "away": "Team B", "league": "SYN1"},
+        {"home": "Team C", "away": "Team D", "league": "SYN1"},
+        {"home": "Team E", "away": "Team F", "league": "SYN1"},
+    ]
+    forward = predictor.predict(base)
+    backward = predictor.predict(list(reversed(base)))
+    for a, b in zip(forward, reversed(backward)):
+        assert a.home == b.home
+        assert a.p_home == pytest.approx(b.p_home, abs=1e-9)
+
+
+def test_unrecognised_team_is_not_silently_substituted(trained):
+    """Bulanık arama her zaman bir aday döndürür; çok uzak eşleşme kabul edilmemeli.
+
+    Aksi hâlde model, tamamen alakasız bir takımın gücüyle güvenli görünen bir
+    tahmin üretir ve kullanıcı bunu fark edemez.
+    """
+    _, predictor, _ = trained
+    prediction = predictor.predict(
+        [{"home": "Zzz Kulubu XYZ", "away": "Qqq Spor WWW", "league": "YOK"}]
+    )[0]
+
+    # Takım adı değiştirilmemiş olmalı (rastgele bir takıma bağlanmamalı).
+    assert prediction.matched_home == "Zzz Kulubu XYZ"
+    assert prediction.matched_away == "Qqq Spor WWW"
+    assert any("tanınmadı" in w for w in prediction.warnings)
+    # Gol modeli bu maça uygulanamaz; satır zayıf olarak işaretlenmeli.
+    assert "dc" not in prediction.components
+    assert prediction.low_data
+
+
+def test_known_teams_are_fully_supported(trained):
+    _, predictor, _ = trained
+    prediction = predictor.predict(
+        [{"home": "Team A", "away": "Team B", "league": "SYN1"}]
+    )[0]
+    assert not prediction.no_data
+    assert not prediction.low_data
+    assert "dc" in prediction.components
+
+
+def test_no_data_rows_render_as_unknown_not_as_a_prediction():
+    """Hiç bileşen yoksa çıktı %33/%33/%33'ü tahmin gibi göstermemeli."""
+    from sportoto.predictor import MatchPrediction
+    from sportoto.report import format_predictions_mobile
+
+    text = format_predictions_mobile(
+        [MatchPrediction("A", "B", None, 1 / 3, 1 / 3, 1 / 3, no_data=True)]
+    )
+    assert "veri yok" in text
+    assert "%33" not in text
+
+
+# --- mobil çıktı ---
+def test_mobile_renderers_are_readable_and_escape_html():
+    import re
+
+    from sportoto.coupon.optimizer import optimize_coupon
+    from sportoto.predictor import MatchPrediction
+    from sportoto.report import (
+        format_coupon_mobile,
+        format_frontier_mobile,
+        format_predictions_mobile,
+        format_tables_mobile,
+        format_weekly_mobile,
+    )
+    from sportoto.coupon.optimizer import budget_frontier
+
+    predictions = [
+        MatchPrediction("Galatasaray", "Fenerbahçe", "T1", 0.52, 0.26, 0.22,
+                        date="2026-09-05", components={"dc": (0.5, 0.26, 0.24)}),
+        MatchPrediction("A & B <script>", "C", "T1", 1 / 3, 1 / 3, 1 / 3,
+                        date="2026-09-05", no_data=True),
+    ]
+    text = format_predictions_mobile(predictions)
+    assert "Galatasaray" in text
+    assert "veri yok" in text                      # no_data açıkça belirtilmeli
+    assert "<script>" not in text                  # HTML kaçışı
+    assert "&lt;script&gt;" in text
+
+    weekly = format_weekly_mobile(predictions)
+    assert "5 Eylül" in weekly and "veri yok" in weekly
+    assert "Yaklaşan maç bulunamadı" in format_weekly_mobile([])
+
+    plan = optimize_coupon((predictions * 8)[:15], max_columns=48, column_price=5.0)
+    coupon = format_coupon_mobile(plan)
+    assert "işaretle" in coupon
+    assert "kolon" in coupon
+    # Spor Toto yazımı: çoklu işaretler tire ile
+    assert "1-0" in coupon or "1-0-2" in coupon
+
+    frontier = format_frontier_mobile(
+        budget_frontier((predictions * 8)[:15], column_price=5.0, max_columns=200), 5.0
+    )
+    assert "kolon" in frontier
+    assert format_frontier_mobile([], 5.0)
+
+    tables = format_tables_mobile(5.0)
+    assert "24" in tables and "çift" in tables
+    # Dar ekran için: tablo satırları makul genişlikte kalmalı
+    plain = [re.sub(r"<[^>]+>", "", line) for line in tables.splitlines()]
+    assert max(len(line) for line in plain if line.startswith("   ")) < 60

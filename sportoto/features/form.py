@@ -62,8 +62,9 @@ def build_form_features(df):
     import numpy as np
     import pandas as pd
 
+    # Kararlı sıralama — gerekçesi için `features/elo.py` içindeki nota bakın.
     df = df.sort_values(
-        ["date", "match_id"] if "match_id" in df.columns else ["date"]
+        ["date", "match_id"] if "match_id" in df.columns else ["date"], kind="mergesort"
     ).reset_index(drop=True)
     n = len(df)
 

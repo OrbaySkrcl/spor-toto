@@ -203,6 +203,13 @@ _register("Celtic", "Celtic FC")
 _register("Rangers", "Glasgow Rangers")
 
 
+#: Bu eşiğin altındaki eşleşmeler kabul edilmez. Bulanık arama her zaman bir
+#: "en yakın" aday döndürür; %12 benzerlikle bulunan takımı kabul etmek, model
+#: tamamen alakasız bir takımın gücüyle güvenli görünen bir tahmin üretmesi
+#: demektir. Tanımamak, yanlış tanımaktan iyidir.
+MIN_ACCEPT_SCORE = 0.45
+
+
 @dataclass
 class TeamMatch:
     """Bir bulanık eşleştirmenin sonucu."""
@@ -211,6 +218,11 @@ class TeamMatch:
     team: str | None
     score: float
     alternatives: list[tuple[str, float]]
+
+    @property
+    def usable(self) -> bool:
+        """Eşleşme kullanılabilecek kadar yakın mı?"""
+        return self.team is not None and self.score >= MIN_ACCEPT_SCORE
 
     @property
     def confident(self) -> bool:

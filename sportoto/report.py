@@ -265,3 +265,213 @@ def format_stats(stats: dict) -> str:
     for row in stats["per_league"][:25]:
         lines.append(f"{row['league']:<8}{_tr_int(row['n']):>9}   {row['last']}")
     return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Telefon (Telegram) için dar biçim
+# ══════════════════════════════════════════════════════════════════════════
+# Terminal tabloları 76 karakter genişliğindedir; telefonda satır sarması
+# yüzünden okunamaz hâle gelirler. Buradaki biçimlendiriciler tablo yerine
+# maç başına kısa satırlar üretir ve HTML kalın yazı kullanır, böylece
+# Telegram metni ekran genişliğine göre düzgün sarar.
+
+LEGEND = (
+    "<b>1</b> = ev sahibi kazanır · "
+    "<b>0</b> = berabere · "
+    "<b>2</b> = deplasman kazanır"
+)
+
+
+def _esc(text: str) -> str:
+    return (
+        str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+
+
+def _pct(value: float, decimals: int = 0) -> str:
+    """Türkçe ondalık ayracıyla yüzde: 0.0234 -> '%2,34'."""
+    return "%" + f"{value * 100:.{decimals}f}".replace(".", ",")
+
+
+def _pick_word(pick: str) -> str:
+    return {"1": "ev sahibi", "0": "berabere", "2": "deplasman"}.get(pick, pick)
+
+
+def format_predictions_mobile(predictions, title: str = "TAHMİNLER") -> str:
+    """Telefonda okunabilir tahmin listesi."""
+    if not predictions:
+        return "Tahmin edilecek maç yok."
+
+    lines = [f"📊 <b>{title}</b>", LEGEND, ""]
+    for i, p in enumerate(predictions, 1):
+        lines.append(f"<b>{i}. {_esc(p.home)} - {_esc(p.away)}</b>")
+        if p.no_data:
+            lines.append("   ⚠️ <i>Bu maç için veri yok — tahmin üretilemedi</i>")
+            lines.append("")
+            continue
+        parts = []
+        for label, value in (("1", p.p_home), ("0", p.p_draw), ("2", p.p_away)):
+            cell = f"{label}: {_pct(value)}"
+            parts.append(f"<b>{cell}</b>" if label == p.favourite else cell)
+        lines.append("   " + "  ·  ".join(parts))
+        verdict = (
+            f"   ➜ <b>{p.favourite}</b> ({_pick_word(p.favourite)}), "
+            f"{confidence_label(p.confidence)}"
+        )
+        if getattr(p, "low_data", False):
+            verdict += "  ⚠️ <i>sınırlı veri</i>"
+        lines.append(verdict)
+        lines.append("")
+
+    unknown = sum(1 for p in predictions if p.no_data)
+    weak = sum(1 for p in predictions if getattr(p, "low_data", False))
+    if unknown:
+        lines.append(f"⚠️ <b>{unknown} maç</b> için veri bulunamadı.")
+    if weak:
+        lines.append(
+            f"⚠️ <b>{weak} maç</b> sınırlı veriyle tahmin edildi "
+            "(takım tanınmadı ya da gol modeli uygulanamadı)."
+        )
+    expected = sum(p.confidence for p in predictions)
+    lines.append(
+        f"Hepsini en olası sonuca oynarsanız beklenen doğru: "
+        f"<b>{expected:.1f} / {len(predictions)}</b>"
+    )
+    return "\n".join(lines)
+
+
+def format_coupon_mobile(plan, column_price: float | None = None) -> str:
+    """Telefonda okunabilir kupon talimatı: hangi maça ne işaretlenecek."""
+    n = len(plan.selections)
+    price = plan.column_price if column_price is None else column_price
+
+    lines = [
+        "🎫 <b>KUPONUNUZ</b>",
+        "Kupon üzerinde aşağıdaki işaretleri yapın. "
+        "Birden fazla işaret varsa hepsini işaretleyin (sistem kuponu).",
+        "",
+    ]
+    for s in plan.selections:
+        name = f"{_esc(s.home)} - {_esc(s.away)}" if s.away else _esc(s.home)
+        marks = s.picks_text          # Spor Toto yazımı: "1", "1-0", "1-0-2"
+        note = {1: "", 2: "  (çift)", 3: "  (üçlü)"}[s.size]
+        lines.append(f"<b>{s.index + 1}. {name}</b>")
+        lines.append(f"   ➜ işaretle: <b>{marks}</b>{note} — tutma {_pct(s.cover)}")
+        lines.append("")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append(
+        f"📋 <b>{plan.singles} tek</b> · <b>{plan.doubles} çift</b> · "
+        f"<b>{plan.triples} üçlü</b>"
+    )
+    cost = f" = <b>{_tr_money(plan.columns * price)}</b>" if price else ""
+    lines.append(f"💰 <b>{_tr_int(plan.columns)} kolon</b>{cost}")
+    lines.append("")
+    lines.append("🎯 <b>TUTMA ŞANSINIZ</b>")
+    for k in range(n, max(n - 4, 0), -1):
+        share = plan.probability_at_least(k)
+        label = f"{k}/{n}" if k == n else f"{k} ve üzeri"
+        lines.append(f"   {label:<12} <b>{_pct(share, 2)}</b>")
+    lines.append("")
+    lines.append(
+        "<i>Not: Spor Toto 12'den itibaren ödeme yapar. Makul bütçelerde "
+        "gerçekçi hedef 15/15 değil, 12-13'tür.</i>"
+    )
+    return "\n".join(lines)
+
+
+def format_weekly_mobile(predictions) -> str:
+    """Telefonda okunabilir haftalık fikstür tahminleri."""
+    if not predictions:
+        return (
+            "Yaklaşan maç bulunamadı.\n"
+            "Veri kaynağı fikstürleri henüz yayınlamamış olabilir; "
+            "/guncelle ile tazeleyip tekrar deneyin."
+        )
+
+    lines = [f"📅 <b>HAFTANIN TAHMİNLERİ</b> ({len(predictions)} maç)", LEGEND, ""]
+    current = object()
+    for p in predictions:
+        if p.date != current:
+            current = p.date
+            lines.append(f"<b>▸ {_tr_date(p.date)}</b>")
+        if p.no_data:
+            lines.append(f"   {_esc(p.home)} - {_esc(p.away)}: ⚠️ veri yok")
+            continue
+        flag = "  ⚠️" if getattr(p, "low_data", False) else ""
+        lines.append(
+            f"   {_esc(p.home)} - {_esc(p.away)}\n"
+            f"      ➜ <b>{p.favourite}</b> {_pct(p.confidence)} "
+            f"({confidence_label(p.confidence)}){flag}"
+        )
+    expected = sum(p.confidence for p in predictions)
+    lines.append("")
+    lines.append(
+        f"Hepsini en olası sonuca oynarsanız beklenen doğru: "
+        f"<b>{expected:.1f} / {len(predictions)}</b>"
+    )
+    return "\n".join(lines)
+
+
+def format_frontier_mobile(plans, column_price: float) -> str:
+    """Telefonda okunabilir bütçe/şans eğrisi."""
+    if not plans:
+        return "Hesaplanacak kupon yok."
+    n = len(plans[0].selections)
+    lines = [
+        "💸 <b>BÜTÇE / ŞANS</b>",
+        "Aynı maçlar, farklı bütçeler:",
+        "",
+    ]
+    shown = plans[:: max(1, len(plans) // 10)] if len(plans) > 10 else plans
+    for plan in shown:
+        cost = plan.columns * column_price
+        lines.append(
+            f"<b>{_tr_int(plan.columns)} kolon</b> ({_tr_money(cost)})\n"
+            f"   {n}/{n}: {_pct(plan.p_all_correct, 3)}  ·  "
+            f"{n - 2}+: {_pct(plan.probability_at_least(n - 2), 1)}"
+        )
+    lines.append("")
+    lines.append(
+        "<i>Bütçeyi 100 katına çıkarmak şansı 100 kat değil, yaklaşık "
+        "10-15 kat artırır. Azalan verim gerçektir.</i>"
+    )
+    return "\n".join(lines)
+
+
+def format_tables_mobile(column_price: float) -> str:
+    """Kolon/bedel bilgisini telefonda okunur liste hâlinde verir.
+
+    Rehberdeki 2 boyutlu tablo dar ekranda sarar ve okunmaz; burada aynı bilgi
+    "kaç çift + kaç üçlü = kaç kolon" satırları olarak verilir.
+    """
+    lines = [
+        "🧮 <b>KOLON VE BEDEL</b>",
+        "Kolon sayısı = 2^(çift sayısı) × 3^(üçlü sayısı)",
+        f"Kolon birim fiyatı: <b>{_tr_money(column_price)}</b>",
+        "",
+    ]
+    combos = [
+        (d, t)
+        for t in range(4)
+        for d in range(8)
+        if 1 < columns_for(d, t) <= 5000
+    ]
+    combos.sort(key=lambda dt: columns_for(*dt))
+    for doubles, triples in combos[:22]:
+        columns = columns_for(doubles, triples)
+        parts = []
+        if doubles:
+            parts.append(f"{doubles} çift")
+        if triples:
+            parts.append(f"{triples} üçlü")
+        lines.append(
+            f"   {' + '.join(parts):<18} <b>{_tr_int(columns)}</b> kolon "
+            f"= {_tr_money(columns * column_price)}"
+        )
+    lines.append("")
+    lines.append(
+        "<i>Tek tahminli maçlar kolon sayısını değiştirmez; yalnızca çift ve "
+        "üçlü işaretlemeler çarpar.</i>"
+    )
+    return "\n".join(lines)

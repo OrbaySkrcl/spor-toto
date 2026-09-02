@@ -112,9 +112,12 @@ def build_elo_history(df, config: EloConfig | None = None):
     import pandas as pd
 
     ratings = EloRatings(config or EloConfig())
-    df = df.sort_values(["date", "match_id"] if "match_id" in df.columns else ["date"]).reset_index(
-        drop=True
-    )
+    # kind="mergesort" = kararlı sıralama. Aynı tarihli maçların göreli sırası
+    # korunmalı; kararsız sıralama satırları karıştırır ve çağıran taraf
+    # sonuçları yanlış maça bağlar.
+    df = df.sort_values(
+        ["date", "match_id"] if "match_id" in df.columns else ["date"], kind="mergesort"
+    ).reset_index(drop=True)
 
     n = len(df)
     elo_h = np.empty(n)
