@@ -159,3 +159,43 @@ cevap, DP çözümünün tek bir takas komşusundaydı.
 
 **Ders:** Bir sezgisel aramada "elimdeki iyi çözüm" de diğerleri gibi bir
 başlangıç noktasıdır. Onu iyileştirme adımından muaf tutma.
+
+## 16. Ölçtüğün iyileştirmenin işe yaramadığını söylemek de sonuçtur
+
+Beraberlik kalibrasyonu yazıldı, test edildi, çalıştı — ve gerçek veride
+"kazanç yok" deyip kendini kapattı. Model zaten kalibreymiş (beraberlik %24,8
+vs gerçek %25,2). Oran hareketi düzeltmesi de aynı korumaya sahip.
+
+Cazip olan, bir özellik yazdıktan sonra onun faydalı olduğunu varsaymaktı.
+Doğru olan, faydayı **tutulan veride** ölçüp yoksa uygulamamak.
+
+**Ders:** Her istatistiksel düzeltmeye bir "kazanç kapısı" koy ve kapıyı fit
+edilen veride değil tutulan veride aç. Serbest parametre sayısı arttıkça
+gürültüden kazanç uydurmak kolaylaşır. Özelliğin devreye girmemesi başarısızlık
+değil; yanlışlıkla devreye girmesi başarısızlıktır.
+
+## 17. Eksik veriyi kapatamıyorsan görünür kıl
+
+TFF 1. Lig için ücretsiz kaynak aradım; football-data.co.uk'un kendi belgesi
+Türkiye için yalnızca Süper Lig yayınladığını söylüyor, GitHub aynalarında da
+yok. Boşluk kapanmıyor.
+
+Yapılabilecek en kötü şey, kapanmayan boşluğu sessizce taşımaktı: kullanıcı
+"neden bu maçlar hep zayıf" diye sorup cevap bulamazdı.
+
+**Ders:** Kapatamadığın eksiği ürünün görünür bir parçası yap. `/kapsam`
+komutu, ingest'te eksik lig takibi ve maç bazında "sınırlı veri" işareti,
+boşluğu bir sürprizden bilinen bir kısıta çevirdi.
+
+## 18. Arayüz testi ağ gerektirmez
+
+Telegram botunun menü akışı (kalıcı tuş takımı, inline butonlar, callback
+işleme) 20 satırlık sahte bir API nesnesiyle uçtan uca test edildi. Gerçek bir
+jeton veya ağ erişimi olmadan buton tıklamaları, durum değişiklikleri ve
+mesaj biçimleri doğrulandı.
+
+İlk testte gerçek bir hata çıktı: `/ayarlar` tuş takımında vardı ama Telegram
+komut menüsüne eklenmemişti.
+
+**Ders:** Dış servisle konuşan katmanı test edilemez sayma. Çağrıları kaydeden
+küçük bir taklit nesne, entegrasyonun kendi mantığını tamamen doğrular.

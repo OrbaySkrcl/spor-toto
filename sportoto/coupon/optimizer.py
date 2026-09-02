@@ -483,3 +483,27 @@ def _normalize(predictions) -> list[tuple[str, str, tuple[float, float, float]]]
             raise ValueError(f"Geçersiz olasılıklar: {probs}")
         rows.append((home, away, tuple(p / total for p in probs)))
     return rows
+
+
+def compare_budgets(
+    predictions,
+    budgets: list[float],
+    column_price: float,
+    target: int | None = None,
+) -> list[CouponPlan]:
+    """Verilen TL bütçeleri için kuponları yan yana hesaplar.
+
+    "Ne kadar koyayım" sorusu tek bir kuponla cevaplanamaz; kullanıcının
+    seçenekleri aynı maç listesi üzerinde görmesi gerekir.
+    """
+    rows = _normalize(predictions)
+    plans = []
+    seen = set()
+    for budget in sorted(set(budgets)):
+        columns = max(1, int(budget // column_price)) if column_price > 0 else int(budget)
+        plan = _optimize_rows(rows, columns, None, column_price, None, target)
+        if plan.columns in seen:
+            continue
+        seen.add(plan.columns)
+        plans.append(plan)
+    return plans

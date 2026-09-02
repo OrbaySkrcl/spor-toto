@@ -30,9 +30,11 @@ from dataclasses import dataclass, field
 import requests
 
 from ..config import Settings
-from ..coupon.optimizer import budget_frontier, optimize_coupon
+from ..coupon.optimizer import budget_frontier, compare_budgets, optimize_coupon
 from ..report import (
+    format_comparison_mobile,
     format_coupon_mobile,
+    format_coverage,
     format_frontier_mobile,
     format_predictions_mobile,
     format_quality,
@@ -47,6 +49,48 @@ from ..teams import parse_coupon
 log = logging.getLogger(__name__)
 
 API = "https://api.telegram.org/bot{token}/{method}"
+
+#: Telegram'ın "/" menüsünde görünecek komutlar ve açıklamaları.
+BOT_COMMANDS = [
+    ("hafta", "Bu haftanın maçları ve tahminleri"),
+    ("ayarlar", "Bütçe ve hedefi tek dokunuşla ayarla"),
+    ("otomatik", "En tahmin edilebilir 15 maçtan kupon"),
+    ("karsilastir", "Farklı bütçeleri yan yana gör"),
+    ("butce", "Kupon bütçenizi ayarlayın (TL)"),
+    ("hedef", "Kaç doğru hedefleyelim (12-15)"),
+    ("egri", "Bütçe / kazanma şansı eğrisi"),
+    ("basari", "Modelin ölçülmüş isabet oranı"),
+    ("gecmis", "Gerçek karne: tahminler vs sonuçlar"),
+    ("kapsam", "Hangi ligler kapsanıyor"),
+    ("durum", "Veri ve model durumu"),
+    ("eksik", "Sakatlık/ceza bildir"),
+    ("tablo", "Kolon adedi ve kupon bedeli"),
+    ("abone", "Haftalık tahminleri otomatik al"),
+    ("guncelle", "Veriyi tazele, modeli yenile"),
+    ("yardim", "Kullanım rehberi"),
+]
+
+#: Sohbette sürekli görünen kısayol tuşları. Butona basınca metni gönderirler,
+#: bu yüzden komut ayrıştırıcısı bu etiketleri de tanır.
+KEYBOARD_LABELS = {
+    "📅 Bu Hafta": "/hafta",
+    "🎫 Otomatik Kupon": "/otomatik",
+    "⚖️ Bütçe Karşılaştır": "/karsilastir",
+    "📈 Karne": "/gecmis",
+    "⚙️ Ayarlar": "/ayarlar",
+    "❓ Yardım": "/yardim",
+}
+
+MAIN_KEYBOARD = {
+    "keyboard": [
+        ["📅 Bu Hafta", "🎫 Otomatik Kupon"],
+        ["⚖️ Bütçe Karşılaştır", "📈 Karne"],
+        ["⚙️ Ayarlar", "❓ Yardım"],
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True,
+    "input_field_placeholder": "15 maçı alt alta yapıştırın…",
+}
 MAX_MESSAGE = 3800  # Telegram sınırı 4096; <pre> etiketlerine pay bırakıldı
 
 WELCOME = """<b>⚽ Spor Toto Tahmin Botu</b>
@@ -54,10 +98,11 @@ WELCOME = """<b>⚽ Spor Toto Tahmin Botu</b>
 Her hafta oynanacak maçlar için 1/0/2 olasılıkları üretir ve bütçenize göre
 <b>15/15 şansını maksimize eden</b> sistem kuponunu hesaplar.
 
-<b>En sık kullanacağınız üç komut</b>
-/hafta — bu haftanın maçları ve tahminleri
-/otomatik — en tahmin edilebilir 15 maçtan sistem kuponu
-/basari — modelin ölçülmüş isabet oranı
+<b>Aşağıdaki tuşlarla başlayın</b> 👇
+📅 Bu Hafta · 🎫 Otomatik Kupon · ⚖️ Bütçe Karşılaştır
+📈 Karne · ⚙️ Ayarlar
+
+Tüm komutlar için mesaj kutusundaki <b>menü butonuna</b> basın.
 /gecmis — gerçek karne (tahminleriniz vs sonuçlar)
 
 <b>Kendi kuponunuz için</b>
@@ -69,6 +114,8 @@ Her hafta oynanacak maçlar için 1/0/2 olasılıkları üretir ve bütçenize g
 
 <b>Diğer komutlar</b>
 /abone — haftalık tahminleri otomatik gönder
+/kapsam — hangi ligler kapsanıyor
+/karsilastir — bütçeleri yan yana gör
 /tahmin Takım A - Takım B — tek maç
 /kolon 576 — bütçe yerine kolon sınırı
 /hedef 13 — kaç doğruyu hedefleyelim (Spor Toto 12'den öder)
@@ -120,12 +167,23 @@ class SporTotoBot:
             return None
         return data.get("result")
 
-    def send(self, chat_id: int, text: str, monospace: bool = False) -> None:
-        """Uzun metinleri Telegram sınırına göre parçalayarak gönderir."""
-        for chunk in _split(text, MAX_MESSAGE):
+    def send(self, chat_id: int, text: str, monospace: bool = False,
+             markup: dict | None = None) -> None:
+        """Uzun metinleri Telegram sınırına göre parçalayarak gönderir.
+
+        `markup` verilirse yalnızca son parçaya eklenir; aksi hâlde tuş takımı
+        her parçada tekrar çizilir.
+        """
+        chunks = _split(text, MAX_MESSAGE)
+        for index, chunk in enumerate(chunks):
             body = f"<pre>{html.escape(chunk)}</pre>" if monospace else chunk
-            self._call("sendMessage", chat_id=chat_id, text=body,
-                       parse_mode="HTML", disable_web_page_preview=True)
+            params = {
+                "chat_id": chat_id, "text": body,
+                "parse_mode": "HTML", "disable_web_page_preview": True,
+            }
+            if markup is not None and index == len(chunks) - 1:
+                params["reply_markup"] = markup
+            self._call("sendMessage", **params)
 
     # -- model ------------------------------------------------------------
     def ensure_model(self, chat_id: int | None = None):
@@ -174,6 +232,109 @@ class SporTotoBot:
             f"<code>{html.escape(predictor.blend.describe())}</code>",
         )
 
+    # -- menüler ----------------------------------------------------------
+    def _register_commands(self) -> None:
+        """Telegram'ın "/" menüsünü doldurur ve menü butonunu açar.
+
+        Kullanıcının komutları ezberlemesi gerekmesin: mesaj kutusundaki menü
+        butonuna basınca açıklamalı liste gelir.
+        """
+        ok = self._call(
+            "setMyCommands",
+            commands=[{"command": c, "description": d} for c, d in BOT_COMMANDS],
+        )
+        self._call("setChatMenuButton", menu_button={"type": "commands"})
+        log.info("Komut menüsü %s", "kuruldu" if ok else "kurulamadı")
+
+    # -- menüler ----------------------------------------------------------
+    def _settings_markup(self, state: "ChatState") -> dict:
+        """Bütçe ve hedef için tek dokunuşluk seçenekler."""
+        budget = state.budget or self.settings.coupon.default_budget
+        target = state.target or self.settings.coupon.n_matches
+
+        def label(text, selected):
+            return f"● {text}" if selected else text
+
+        return {
+            "inline_keyboard": [
+                [{"text": "— Bütçe —", "callback_data": "noop"}],
+                [
+                    {"text": label(f"{amount} TL", abs(budget - amount) < 1),
+                     "callback_data": f"butce:{amount}"}
+                    for amount in (250, 500, 1000)
+                ],
+                [
+                    {"text": label(f"{amount} TL", abs(budget - amount) < 1),
+                     "callback_data": f"butce:{amount}"}
+                    for amount in (2500, 5000, 10000)
+                ],
+                [{"text": "— Hedef (kaç doğru) —", "callback_data": "noop"}],
+                [
+                    {"text": label(f"{k}+", target == k), "callback_data": f"hedef:{k}"}
+                    for k in (12, 13, 14, 15)
+                ],
+                [
+                    {"text": "📅 Bu hafta", "callback_data": "cmd:hafta"},
+                    {"text": "🎫 Kupon", "callback_data": "cmd:otomatik"},
+                ],
+            ]
+        }
+
+    def _cmd_settings(self, chat_id: int, state: "ChatState") -> None:
+        price = self.settings.coupon.column_price
+        budget = state.budget or self.settings.coupon.default_budget
+        target = state.target or self.settings.coupon.n_matches
+        self._call(
+            "sendMessage",
+            chat_id=chat_id,
+            parse_mode="HTML",
+            text=(
+                "⚙️ <b>AYARLAR</b>\n\n"
+                f"💰 Bütçe: <b>{budget:,.0f} TL</b> "
+                f"(≈ {int(budget // price):,} kolon)\n"
+                f"🎯 Hedef: <b>en az {target} doğru</b>\n"
+                f"🧾 Kolon fiyatı: {price:,.2f} TL\n\n"
+                "<i>Aşağıdan seçin ya da <code>/butce 3500</code> gibi "
+                "kendi değerinizi yazın.</i>"
+            ).replace(",", "."),
+            reply_markup=self._settings_markup(state),
+        )
+
+    def handle_callback(self, query: dict) -> None:
+        """Inline butonlara basıldığında çalışır."""
+        data = query.get("data") or ""
+        message = query.get("message") or {}
+        chat_id = message.get("chat", {}).get("id")
+        self._call("answerCallbackQuery", callback_query_id=query.get("id"))
+        if not chat_id or data == "noop":
+            return
+        state = self.states.setdefault(chat_id, ChatState())
+        try:
+            action, _, value = data.partition(":")
+            if action == "butce":
+                self._cmd_budget(chat_id, state, value)
+                self._refresh_settings(query, state)
+            elif action == "hedef":
+                self._cmd_target(chat_id, state, value)
+                self._refresh_settings(query, state)
+            elif action == "cmd":
+                self._dispatch(chat_id, state, f"/{value}")
+        except Exception as exc:
+            log.exception("Buton işlenemedi")
+            self.send(chat_id, f"⚠️ Hata: {html.escape(str(exc))}")
+
+    def _refresh_settings(self, query: dict, state: "ChatState") -> None:
+        """Seçim yapıldıktan sonra menüdeki işaretleri günceller."""
+        message = query.get("message") or {}
+        chat_id = message.get("chat", {}).get("id")
+        message_id = message.get("message_id")
+        if chat_id and message_id:
+            self._call(
+                "editMessageReplyMarkup",
+                chat_id=chat_id, message_id=message_id,
+                reply_markup=self._settings_markup(state),
+            )
+
     # -- komutlar ---------------------------------------------------------
     def handle(self, message: dict) -> None:
         chat_id = message.get("chat", {}).get("id")
@@ -189,12 +350,20 @@ class SporTotoBot:
             self.send(chat_id, f"⚠️ Hata: {html.escape(str(exc))}")
 
     def _dispatch(self, chat_id: int, state: ChatState, text: str) -> None:
+        # Kısayol tuşları metin gönderir; onları komuta çevir.
+        text = KEYBOARD_LABELS.get(text.strip(), text)
         lowered = text.lower()
         command = lowered.split()[0].split("@")[0] if lowered.startswith("/") else ""
         argument = text[len(command):].strip() if command else text
 
-        if command in {"/start", "/yardim", "/help"}:
-            self.send(chat_id, WELCOME)
+        if command in {"/start", "/yardim", "/help", "/menu"}:
+            self.send(chat_id, WELCOME, markup=MAIN_KEYBOARD)
+        elif command in {"/ayarlar", "/ayar"}:
+            self._cmd_settings(chat_id, state)
+        elif command in {"/karsilastir", "/karsilastır"}:
+            self._cmd_compare(chat_id, state)
+        elif command == "/kapsam":
+            self._cmd_coverage(chat_id)
         elif command == "/durum":
             self._cmd_status(chat_id)
         elif command == "/butce":
@@ -403,6 +572,34 @@ class SporTotoBot:
         predictor = self.ensure_model(chat_id)
         self.send(chat_id, format_quality(predictor.quality), monospace=True)
 
+    def _cmd_compare(self, chat_id: int, state: ChatState) -> None:
+        """Aynı maçlar için farklı bütçeleri yan yana gösterir."""
+        predictions = state.last_predictions
+        if not predictions:
+            predictor = self.ensure_model(chat_id)
+            upcoming = predictor.upcoming(days=8)
+            need = self.settings.coupon.n_matches
+            if len(upcoming) < need:
+                self.send(
+                    chat_id,
+                    "Önce bir kupon gönderin ya da /hafta ile maçları getirin; "
+                    "sonra /karsilastir yazın.",
+                )
+                return
+            predictions = sorted(upcoming, key=lambda p: -p.confidence)[:need]
+            state.last_predictions = predictions
+
+        price = self.settings.coupon.column_price
+        plans = compare_budgets(
+            predictions, [250, 500, 1000, 2500, 5000, 10000], price, target=state.target
+        )
+        self.send(chat_id, format_comparison_mobile(plans, price),
+                  markup=self._settings_markup(state))
+
+    def _cmd_coverage(self, chat_id: int) -> None:
+        db = Database(self.settings.db_path)
+        self.send(chat_id, format_coverage(db.coverage(self.settings.leagues)))
+
     def _cmd_history(self, chat_id: int) -> None:
         predictor = self.ensure_model(chat_id)
         self.send(chat_id, format_track_record(predictor.track_record()))
@@ -605,6 +802,7 @@ class SporTotoBot:
             log.error("Telegram jetonu geçersiz veya API'ye ulaşılamıyor.")
             return 1
         log.info("Bot çalışıyor: @%s", me.get("username"))
+        self._register_commands()
 
         # Modeli arka planda önden yükle ki ilk komut beklemesin.
         threading.Thread(target=self.ensure_model, daemon=True).start()
@@ -628,6 +826,9 @@ class SporTotoBot:
             backoff = 1.0
             for update in updates:
                 self._offset = update["update_id"] + 1
+                if "callback_query" in update:
+                    self.handle_callback(update["callback_query"])
+                    continue
                 message = update.get("message") or update.get("edited_message")
                 if message:
                     self.handle(message)

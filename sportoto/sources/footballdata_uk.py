@@ -86,7 +86,8 @@ class FootballDataUK(Source):
             if league.layout == "extra":
                 # Tek dosyada tüm sezonlar var; sezonu satır içinden süzeriz.
                 raw = self._download(
-                    BASE_EXTRA.format(code=league.code), f"fd_extra_{league.code}.csv", 12.0
+                    BASE_EXTRA.format(code=league.code), f"fd_extra_{league.code}.csv", 12.0,
+                    label=league.code,
                 )
                 if raw:
                     out.extend(self._parse_extra(_rows(raw), league.code, set(seasons)))
@@ -99,6 +100,7 @@ class FootballDataUK(Source):
                     BASE_MAIN.format(season=season, code=league.code),
                     f"fd_{league.code}_{season}.csv",
                     max_age,
+                    label=league.code,
                 )
                 if raw:
                     out.extend(self._parse_main(_rows(raw), league.code, season))

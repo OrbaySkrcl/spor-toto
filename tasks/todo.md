@@ -169,3 +169,25 @@ Oranlı yol (sentetik lig): blend piyasanın kendisini de geçti
   çıkarsa o maçlar için yalnızca form bileşeni çalışır.
 * İkramiye havuzu verisi bulunursa `optimize_coupon`'a EV modu eklenebilir
   (olasılık yerine beklenen getiri maksimizasyonu).
+
+---
+
+# Faz 7 — İyileştirme turu (kullanıcı isteği)
+
+- [x] 1. TFF 1. Lig verisi: kaynak araştır, yoksa eksikliği görünür kıl
+- [x] 2. Beraberlik kalibrasyonu (vektör ölçekleme, sınıf bazlı düzeltme)
+- [x] 3. Oran hareketi: kendi anlık görüntülerimizle drift ölçümü
+- [x] 4. Kupon karşılaştırma: 3 bütçe yan yana
+- [x] 5. Telegram kısayol menüsü (komut menüsü + tuş takımı + inline butonlar)
+
+## Faz 7 sonuçları
+
+| Madde | Sonuç |
+|---|---|
+| 1. TFF 1. Lig | **Ücretsiz kaynak yok** (kaynağın kendi belgesiyle doğrulandı). Boşluk gizlenmiyor: `/kapsam` komutu, ingest'te eksik lig takibi ve maç bazında "sınırlı veri" işareti eklendi. |
+| 2. Beraberlik kalibrasyonu | Vektör ölçekleme eklendi, tutulan veri koruması ile. Gerçek veride model zaten kalibre çıktı (beraberlik %24,8 vs %25,2) ve katman kendini kapattı — doğru davranış. |
+| 3. Oran hareketi | Kendi anlık görüntülerimizle açılış/kapanış ayrımı kuruldu (write-once açılış oranı). Tek katsayılı γ düzeltmesi, kazanç yoksa uygulanmıyor. |
+| 4. Kupon karşılaştırma | `compare_budgets` + mobil rapor. 6 bütçe yan yana, lira başına en verimli seçenek işaretli. |
+| 5. Telegram menüsü | `setMyCommands` ile açıklamalı komut menüsü, kalıcı kısayol tuş takımı, bütçe/hedef için inline butonlar ve callback işleme. Sahte Telegram sunucusuyla uçtan uca test edildi. |
+
+251 test, tümü geçiyor.

@@ -44,9 +44,12 @@ LEAGUES: dict[str, League] = {
     for lg in [
         # --- Türkiye ---
         League("T1", "Süper Lig", "Türkiye", "main", 1, group="TR"),
-        # TFF 1. Lig. Kaynakta her sezon bulunmayabilir; yoksa indirme sessizce
-        # atlanır. Spor Toto listeleri Süper Lig ile 1. Lig'i sık karıştırdığı
-        # için varsa büyük kazanç, yoksa maliyeti yok.
+        # TFF 1. Lig. football-data.co.uk Türkiye için YALNIZCA T1 yayınlıyor
+        # (kaynağın kendi belgesi bunu açıkça söylüyor), bu yüzden varsayılan
+        # indirme kümesinde yok — eklenirse her sezon için boşuna 404 alınır.
+        # Kaynak ileride eklerse SPORTOTO_LEAGUES ile açılabilsin diye tanım
+        # burada duruyor. Spor Toto listelerindeki 1. Lig maçları bu yüzden
+        # "kapsam dışı" olarak işaretlenir; sistem bunu gizlemez.
         League("T2", "1. Lig", "Türkiye", "main", 2, group="TR"),
         # --- İngiltere ---
         League("E0", "Premier League", "İngiltere", "main", 1, "premier-league", group="EN"),
@@ -101,7 +104,7 @@ def league_group(code: str | None) -> str | None:
 
 #: Spor Toto kuponlarında en sık görülen ligler — varsayılan indirme kümesi.
 DEFAULT_LEAGUES = [
-    "T1", "T2", "E0", "E1", "SP1", "SP2", "I1", "I2", "D1", "D2",
+    "T1", "E0", "E1", "SP1", "SP2", "I1", "I2", "D1", "D2",
     "F1", "F2", "N1", "B1", "P1", "G1", "SC0",
 ]
 

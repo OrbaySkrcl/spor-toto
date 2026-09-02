@@ -16,6 +16,9 @@ Varsayılan ``power``: Shin kadar iyi çalışır, sayısal olarak daha kararlı
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
+
+import numpy as np
 
 _EPS = 1e-12
 
@@ -123,8 +126,6 @@ def market_frame(df, method: str = "power", prefix: str = ""):
     Kapanış oranı varsa onu tercih eder (piyasanın son ve en bilgili hâli),
     yoksa açılış/ortalama oranına düşer.
     """
-    import numpy as np
-
     n = len(df)
     out_h = np.full(n, np.nan)
     out_d = np.full(n, np.nan)
@@ -145,8 +146,106 @@ def market_frame(df, method: str = "power", prefix: str = ""):
         if probs is not None:
             out_h[i], out_d[i], out_a[i] = probs
 
+    # Açılış oranından da olasılık üret: kapanışla farkı "oran hareketi"dir
+    # ve paranın hangi yöne aktığını gösterir.
+    open_h = np.full(n, np.nan)
+    open_d = np.full(n, np.nan)
+    open_a = np.full(n, np.nan)
+    for i in range(n):
+        probs = implied_probabilities(oh[i], od[i], oa[i], method)
+        if probs is not None:
+            open_h[i], open_d[i], open_a[i] = probs
+
     result = df.copy()
     result[f"{prefix}mkt_h"] = out_h
     result[f"{prefix}mkt_d"] = out_d
     result[f"{prefix}mkt_a"] = out_a
+    result[f"{prefix}mkto_h"] = open_h
+    result[f"{prefix}mkto_d"] = open_d
+    result[f"{prefix}mkto_a"] = open_a
     return result
+
+
+@dataclass
+class DriftAdjustment:
+    """Oran hareketini piyasa olasılığına katan tek parametreli düzeltme.
+
+    Kapanış oranı zaten piyasanın en bilgili hâlidir; hareketin taşıdığı ek
+    bilgi, kapanışın hareketi tam yansıtıp yansıtmadığıdır. Bunu tek bir
+    katsayıyla modelleriz:
+
+        p' ∝ p_kapanış · (p_kapanış / p_açılış)^γ
+
+    γ > 0: piyasa hareketi yeterince ileri götürmemiş, yönü bir miktar
+    uzatmak faydalı. γ = 0: hareketin ek bilgisi yok (kapanış zaten yeterli).
+    γ doğrulama penceresinde log-loss ile kestirilir ve **tutulan veride**
+    kazanç yoksa uygulanmaz.
+    """
+
+    gamma: float = 0.0
+    fitted: bool = False
+    gain: float = 0.0
+
+    def fit(self, close, open_, outcomes) -> "DriftAdjustment":
+        from scipy.optimize import minimize_scalar
+
+        close = np.asarray(close, dtype=float)
+        open_ = np.asarray(open_, dtype=float)
+        y = np.asarray(outcomes, dtype=int)
+        usable = ~(np.isnan(close).any(axis=1) | np.isnan(open_).any(axis=1)) & (y >= 0)
+        if usable.sum() < 400:
+            return self
+        close, open_, y = close[usable], open_[usable], y[usable]
+
+        split = int(len(y) * 0.7)
+
+        def loss(gamma, c, o, target):
+            p = self._apply(c, o, gamma)
+            return -np.mean(np.log(np.clip(p[np.arange(len(target)), target], 1e-9, 1.0)))
+
+        result = minimize_scalar(
+            lambda g: loss(g, close[:split], open_[:split], y[:split]),
+            bounds=(-1.5, 1.5), method="bounded",
+        )
+        gamma = float(result.x)
+        baseline = loss(0.0, close[split:], open_[split:], y[split:])
+        gain = baseline - loss(gamma, close[split:], open_[split:], y[split:])
+        if gain <= 1e-4:
+            return self
+        self.gamma, self.fitted, self.gain = gamma, True, float(gain)
+        return self
+
+    @staticmethod
+    def _apply(close, open_, gamma: float):
+        close = np.clip(close, 1e-9, 1.0)
+        open_ = np.clip(open_, 1e-9, 1.0)
+        logits = np.log(close) + gamma * (np.log(close) - np.log(open_))
+        logits -= logits.max(axis=1, keepdims=True)
+        out = np.exp(logits)
+        return out / out.sum(axis=1, keepdims=True)
+
+    def apply(self, close, open_):
+        close = np.asarray(close, dtype=float)
+        if not self.fitted:
+            return close
+        open_ = np.asarray(open_, dtype=float)
+        missing = np.isnan(open_).any(axis=1)
+        out = self._apply(close, np.where(np.isnan(open_), close, open_), self.gamma)
+        out[missing] = close[missing]     # hareket bilinmiyorsa kapanışı kullan
+        return out
+
+    def describe(self) -> str:
+        if not self.fitted:
+            return "oran hareketi: uygulanmıyor (kazanç yok)"
+        return f"oran hareketi: γ={self.gamma:+.3f} | log-loss kazancı {self.gain:.4f}"
+
+    def to_dict(self) -> dict:
+        return {"gamma": self.gamma, "fitted": self.fitted, "gain": self.gain}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DriftAdjustment":
+        return cls(
+            gamma=float(data.get("gamma", 0.0)),
+            fitted=bool(data.get("fitted", False)),
+            gain=float(data.get("gain", 0.0)),
+        )

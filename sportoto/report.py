@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .config import LEAGUES
 from .coupon.optimizer import CouponPlan
 from .coupon.pricing import columns_for
 
@@ -513,4 +514,73 @@ def format_track_record(record: dict) -> str:
                 f"   {band['label']:<14} {band['n']:>4} maç · "
                 f"iddia {_pct(band['claimed'])} · gerçek <b>{_pct(band['hit_rate'])}</b>"
             )
+    return "\n".join(lines)
+
+
+def format_coverage(coverage: dict, column_price: float | None = None) -> str:
+    """Hangi liglerin kapsandığını, hangilerinin kapsanmadığını söyler.
+
+    "Bu maç neden zayıf tahmin edildi" sorusunun cevabı çoğu zaman burada.
+    """
+    present = coverage.get("present", {})
+    lines = ["🗺️ <b>KAPSAM</b>", ""]
+    if present:
+        lines.append("<b>Veri gelen ligler:</b>")
+        for code, count in sorted(present.items(), key=lambda kv: -kv[1]):
+            league = LEAGUES.get(code)
+            name = f"{league.country} {league.name}" if league else code
+            lines.append(f"   {code:<5} {name:<28} {_tr_int(count)} maç")
+    missing = coverage.get("missing_from_source") or []
+    empty = [c for c in (coverage.get("empty") or []) if c not in missing]
+    if missing:
+        lines.append("")
+        lines.append("<b>Kaynakta bulunmayan ligler:</b>")
+        for code in missing:
+            league = LEAGUES.get(code)
+            name = f"{league.country} {league.name}" if league else code
+            lines.append(f"   ⛔ {code} — {name}")
+    if empty:
+        lines.append("")
+        lines.append("<b>Ayarlı ama verisi gelmemiş:</b> " + ", ".join(empty))
+    lines.append("")
+    lines.append(
+        "<i>Kapsam dışı bir takım kuponda çıkarsa o maç \"sınırlı veri\" olarak "
+        "işaretlenir ve optimizasyon ona öncelikle çift/üçlü verir. "
+        "TFF 1. Lig ücretsiz kaynaklarda yayınlanmıyor.</i>"
+    )
+    return "\n".join(lines)
+
+
+def format_comparison_mobile(plans: list, column_price: float) -> str:
+    """Farklı bütçeler için kuponları yan yana özetler."""
+    if not plans:
+        return "Karşılaştırılacak kupon yok."
+    n = len(plans[0].selections)
+    lines = [
+        "⚖️ <b>BÜTÇE KARŞILAŞTIRMASI</b>",
+        "Aynı maçlar, farklı bütçeler:",
+        "",
+    ]
+    for plan in plans:
+        cost = plan.columns * column_price
+        lines.append(f"<b>▸ {_tr_money(cost)}</b> · {_tr_int(plan.columns)} kolon")
+        lines.append(
+            f"   {plan.singles} tek · {plan.doubles} çift · {plan.triples} üçlü"
+        )
+        lines.append(
+            f"   {n}/{n}: <b>{_pct(plan.p_all_correct, 3)}</b>  ·  "
+            f"{n - 2}+: <b>{_pct(plan.probability_at_least(n - 2), 1)}</b>  ·  "
+            f"{n - 3}+: {_pct(plan.probability_at_least(n - 3), 1)}"
+        )
+        lines.append("")
+    best = max(plans, key=lambda p: p.probability_at_least(n - 3) / max(p.columns, 1))
+    lines.append(
+        f"💡 Lira başına en verimli seçenek: <b>"
+        f"{_tr_money(best.columns * column_price)}</b>"
+    )
+    lines.append(
+        "<i>Bütçeyi katlamak şansı aynı oranda katlamaz; yukarıdaki "
+        "rakamlar bunu gösterir. Seçtiğiniz bütçeyi /butce ile ayarlayıp "
+        "kuponu tekrar isteyin.</i>"
+    )
     return "\n".join(lines)

@@ -84,6 +84,10 @@ class Source:
 
     def __init__(self, settings):
         self.settings = settings
+        #: İndirilemeyen kaynak dosyaları (lig kodu -> sebep). Kapsam
+        #: raporunda kullanılır: kullanıcı hangi ligin verisinin gelmediğini
+        #: tahmin etmek zorunda kalmamalı.
+        self.missing: dict[str, str] = {}
 
     def fetch(self, leagues: list[str], seasons: list[str] | None = None) -> list[dict]:
         """Oynanmış maçları `storage.MATCH_COLUMNS` anahtarlarıyla döner."""
@@ -98,7 +102,8 @@ class Source:
         safe = key.replace("/", "_").replace(":", "_")
         return Path(self.settings.cache_dir) / safe
 
-    def _download(self, url: str, cache_key: str, max_age_hours: float = 6.0) -> bytes | None:
+    def _download(self, url: str, cache_key: str, max_age_hours: float = 6.0,
+                  label: str | None = None) -> bytes | None:
         """URL'yi indirir; taze önbellek varsa ağa çıkmaz. Hata hâlinde None."""
         import requests
 
@@ -117,9 +122,13 @@ class Source:
                 log.warning("%s indirilemedi (%s); bayat önbellek kullanılıyor", url, exc)
                 return path.read_bytes()
             log.warning("%s indirilemedi: %s", url, exc)
+            if label:
+                self.missing.setdefault(label, str(exc)[:120])
             return None
 
         if not resp.content or len(resp.content) < 64:
+            if label and not path.exists():
+                self.missing.setdefault(label, "kaynakta boş/eksik dosya")
             return path.read_bytes() if path.exists() else None
         path.write_bytes(resp.content)
         return resp.content

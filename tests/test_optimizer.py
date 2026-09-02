@@ -221,3 +221,27 @@ def test_maximal_allocations_prunes_dominated_combinations():
         # Bütçeye sığan ve bunu her boyutta kapsayan başka bir bileşim olmamalı.
         assert columns_for(doubles + 1, triples) > 96
         assert columns_for(doubles, triples + 1) > 96
+
+
+# --- bütçe karşılaştırma ---
+def test_compare_budgets_returns_increasing_options():
+    from sportoto.coupon.optimizer import compare_budgets
+
+    probs = [random_probs() for _ in range(15)]
+    plans = compare_budgets(probs, [250, 500, 2000, 10000], column_price=5.0)
+    assert len(plans) >= 3
+    columns = [p.columns for p in plans]
+    assert columns == sorted(columns)
+    assert len(set(columns)) == len(columns)          # yinelenen seçenek yok
+    for plan, budget in zip(plans, sorted({250, 500, 2000, 10000})):
+        assert plan.cost <= budget
+    probabilities = [p.p_all_correct for p in plans]
+    assert all(b >= a - 1e-12 for a, b in zip(probabilities, probabilities[1:]))
+
+
+def test_compare_budgets_respects_target():
+    from sportoto.coupon.optimizer import compare_budgets
+
+    probs = [random_probs() for _ in range(15)]
+    plans = compare_budgets(probs, [2000], column_price=5.0, target=13)
+    assert plans[0].target == 13

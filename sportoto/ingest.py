@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .config import Settings
@@ -21,12 +22,19 @@ class IngestResult:
     leagues: list[str]
     seasons: list[str]
     fixtures: int = 0
+    #: Kaynağın sunmadığı lig kodları (ör. TFF 1. Lig). Kullanıcıya gösterilir.
+    missing: dict = field(default_factory=dict)
 
     def summary(self) -> str:
         return (
             f"{self.source}: {self.fetched} maç çekildi, {self.written} kayıt yazıldı "
             f"({len(self.leagues)} lig, {len(self.seasons)} sezon)"
             + (f", {self.fixtures} yaklaşan maç" if self.fixtures else "")
+            + (
+                f" | kaynakta yok: {', '.join(sorted(self.missing))}"
+                if self.missing
+                else ""
+            )
         )
 
 
@@ -61,22 +69,19 @@ def ingest(
         upcoming = [f for f in upcoming if (f.get("league") or "").upper() in wanted]
         if upcoming:
             # Fikstürleri sonuçsuz maç olarak yazarız; oynanınca sonuç dolar.
-            db.upsert_matches(
-                [
-                    {
-                        "league": f["league"], "date": f["date"],
-                        "home": f["home"], "away": f["away"],
-                        "odds_h": f.get("odds_h"), "odds_d": f.get("odds_d"),
-                        "odds_a": f.get("odds_a"), "source": f.get("source"),
-                    }
-                    for f in upcoming
-                ]
-            )
+            db.upsert_fixtures(upcoming)
             fixtures = len(upcoming)
 
     db.set_meta("last_ingest", datetime.now(timezone.utc).isoformat(timespec="seconds"))
     db.set_meta("last_ingest_source", source.name)
+    db.set_meta("missing_leagues", json.dumps(sorted(source.missing), ensure_ascii=False))
+    if source.missing:
+        log.warning(
+            "Kaynak şu ligleri sunmuyor: %s", ", ".join(sorted(source.missing))
+        )
 
-    result = IngestResult(source.name, len(rows), written, leagues, seasons, fixtures)
+    result = IngestResult(
+        source.name, len(rows), written, leagues, seasons, fixtures, dict(source.missing)
+    )
     log.info(result.summary())
     return result

@@ -180,8 +180,14 @@ Haftalık akış için resmî listeyi beklemenize gerek yok:
 | `/otomatik` | En tahmin edilebilir 15 maçtan sistem kuponu kurar |
 | `/basari` | Modelin ölçülmüş isabet oranını gösterir |
 | `/abone` | Haftalık tahminleri otomatik gönderir (varsayılan: Perşembe) |
+| `/karsilastir` | Aynı maçlar için farklı bütçeleri yan yana gösterir |
+| `/kapsam` | Hangi ligler kapsanıyor, hangileri kaynakta yok |
+| `⚙️ Ayarlar` | Bütçe ve hedefi tek dokunuşla değiştiren inline menü |
 
 Diğerleri: `/durum`, `/tahmin A - B`, `/egri`, `/tablo`, `/eksik`, `/guncelle`, `/yardim`.
+
+Bot açılışta Telegram'ın komut menüsünü (`setMyCommands`) doldurur ve kalıcı bir
+kısayol tuş takımı gösterir; kullanıcı komut ezberlemek zorunda değildir.
 
 ---
 
@@ -260,6 +266,31 @@ Modelin isabet oranı her eğitimde **örnek dışı** ölçülür: kalibrasyon
 penceresi zamana göre 70/30 bölünür, ağırlıklar ilk parçada öğrenilir, başarı
 son parçada ölçülür, sonra ağırlıklar tüm pencereyle yeniden kestirilir.
 Kullanıcıya gösterilen yüzde bu ölçümden gelir.
+
+### Sınıf kalibrasyonu (vektör ölçekleme)
+
+Log havuzu bileşenlerin göreli ağırlığını öğrenir ama sınıfların sistematik
+kaymasını düzeltmez. Futbolda bu en çok beraberlikte görülür ve doğrudan kupona
+yansır. Blend'in üstüne 4 serbest parametreli bir vektör ölçekleme oturur:
+`p'_c ∝ exp(w_c · log p_c + b_c)`.
+
+Kritik nokta: kazanç **tutulan veride** ölçülür. Dört parametre gürültüden bile
+küçük bir "iyileşme" uydurabilir; tutulan dilimde kazanç yoksa kalibrasyon
+uygulanmaz. Gerçek veride (5 Avrupa ligi) model zaten kalibreydi — beraberlik
+model %24,8 / gerçek %25,2 — ve katman kendini kapattı. Sapma çıkarsa devreye girer.
+
+### Oran hareketi
+
+Kapanış oranı piyasanın en bilgili hâlidir; hareketin taşıdığı ek bilgi,
+kapanışın hareketi tam yansıtıp yansıtmadığıdır. Tek katsayıyla modellenir:
+`p' ∝ p_kapanış · (p_kapanış / p_açılış)^γ`.
+
+Üretimde kapanış oranı yoktur (kaynak yaklaşan maçlar için yalnızca "şu anki"
+oranı verir), bu yüzden **kendi anlık görüntülerimizi** tutarız: bir fikstür ilk
+görüldüğünde oranı açılış olarak yazılır ve bir daha değişmez; her güncellemede
+güncel oran ayrı bir alana yazılır. Bu, geçmiş verideki açılış/kapanış düzeniyle
+aynı anlama gelir, dolayısıyla eğitimde öğrenilen etki üretimde de geçerlidir.
+γ de tutulan veride kazanç yoksa uygulanmaz.
 
 ### Saklanan oranların yapıştırılan kupona bağlanması
 
@@ -387,6 +418,7 @@ optimizasyonu.
 | İstenen | Durum | Neden |
 |---|---|---|
 | xG / xGA / PPDA / big chances | ❌ | Ücretsiz ve yasal toplu API'si yok. FBref/Understat kazıma ToS ihlali. Şu an yerine **isabetli şut hâkimiyeti** kullanılıyor (zayıf bir vekil). |
+| TFF 1. Lig ve alt ligler | ❌ | football-data.co.uk Türkiye için yalnızca Süper Lig (T1) yayınlıyor; openfootball ve GitHub aynalarında da yok. `/kapsam` bu boşluğu açıkça gösterir, sistem gizlemez. |
 | Sakatlık / ceza / muhtemel ilk 11 | ⚠️ manuel | Ücretsiz güvenilir kaynak yok. `sportoto adjust` / `/eksik` ile elle girilir; düzeltme doğrudan Dixon-Coles gol beklentisine uygulanır (yukarıya bakın). |
 | Motivasyon (küme düşme, şampiyonluk) | ⚠️ vekil | `motivation_proxy` puan durumundan türetir; modele henüz bağlı değil (backtest'te anlamlı katkı vermedi). |
 | Oran hareketi (tick düzeyi) | ⚠️ kısmi | Kaynak açılış + kapanış oranı verir; ikisinin farkı hesaplanabilir ama saniyelik hareket yoktur. |
@@ -426,7 +458,7 @@ tutucudur — güncel değeri kontrol edip ayarlayın.
 
 ```bash
 pip install -r requirements.txt pytest
-python -m pytest tests/ -q          # 220 test
+python -m pytest tests/ -q          # 251 test
 ```
 
 Ağ olmadan çalışmak için sentetik kaynak yeterlidir:

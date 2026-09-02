@@ -26,6 +26,7 @@ import pandas as pd
 from .config import Settings
 from .coupon.optimizer import optimize_coupon
 from .models.blend import LogPoolBlend
+from .models.calibration import VectorScaling
 from .pipeline import prepare_frame, stack_components, walk_forward
 
 log = logging.getLogger(__name__)
@@ -122,6 +123,8 @@ class BacktestResult:
     per_season: pd.DataFrame
     calibration: pd.DataFrame
     blend: LogPoolBlend
+    calibrator: VectorScaling = field(default_factory=VectorScaling)
+    drift_note: str = ""
     simulations: list[CouponSimulation] = field(default_factory=list)
 
     def report(self) -> str:
@@ -131,7 +134,11 @@ class BacktestResult:
             f"\nDeğerlendirilen maç: {o['n']:,}".replace(",", ".")
             + f"   ({self.rows['date'].min().date()} → {self.rows['date'].max().date()})"
         )
-        lines.append(f"Blend {self.blend.describe()}\n")
+        lines.append(f"Blend {self.blend.describe()}")
+        lines.append(f"{self.calibrator.describe()}")
+        if self.drift_note:
+            lines.append(self.drift_note)
+        lines.append("")
         lines.append(f"{'Model':<12}{'n':>7}{'İsabet':>9}{'LogLoss':>10}{'RPS':>9}{'Brier':>9}")
         lines.append("-" * 74)
         for name, m in self.per_component.items():
@@ -199,8 +206,12 @@ def run_backtest(
         refit_days=refit_days, progress=progress,
     )
     blend = LogPoolBlend()
+    calibrator = VectorScaling()
     if len(calib_rows) >= 200:
         blend.fit(stack_components(calib_rows), calib_rows["y"].to_numpy())
+        calibrator.fit(
+            blend.predict(stack_components(calib_rows)), calib_rows["y"].to_numpy()
+        )
     else:
         blend = LogPoolBlend(
             components=["dc", "elo", "market", "form"],
@@ -223,7 +234,7 @@ def run_backtest(
     rows = rows[rows["y"] >= 0].reset_index(drop=True)
 
     stacks = stack_components(rows)
-    blended = blend.predict(stacks)
+    blended = calibrator.apply(blend.predict(stacks))
     floor = settings.model.prob_floor
     blended = np.clip(blended, floor, None)
     blended = blended / blended.sum(axis=1, keepdims=True)
@@ -244,6 +255,7 @@ def run_backtest(
         per_season=per_season,
         calibration=calibration_table(blended, y),
         blend=blend,
+        calibrator=calibrator,
         simulations=simulate_coupons(
             rows, budgets or [1, 24, 96, 576, 3072], settings.coupon.column_price
         ),

@@ -171,3 +171,37 @@ def test_subscriber_management(db):
     db.remove_subscriber(111)
     assert db.subscribers() == [222]
     db.remove_subscriber(999)       # olmayanı silmek hata vermemeli
+
+
+def test_upsert_fixtures_keeps_opening_odds_and_updates_current(db):
+    """Oran hareketini ölçebilmek için ilk görülen oran korunmalı.
+
+    Yaklaşan maçlarda kaynak yalnızca "şu anki" oranı verir; açılış/kapanış
+    ayrımını kendi anlık görüntülerimizle kurarız.
+    """
+    fixture = {"league": "T1", "date": "2026-09-10", "home": "A", "away": "B",
+               "source": "x"}
+    db.upsert_fixtures([dict(fixture, odds_h=2.00, odds_d=3.40, odds_a=3.80)])
+    db.upsert_fixtures([dict(fixture, odds_h=1.85, odds_d=3.50, odds_a=4.20)])
+    db.upsert_fixtures([dict(fixture, odds_h=1.75, odds_d=3.60, odds_a=4.60)])
+
+    row = db.load_fixtures(days=400).iloc[0]
+    assert row["odds_h"] == 2.00        # açılış korunur
+    assert row["codds_h"] == 1.75       # güncel tazelenir
+    assert row["odds_a"] == 3.80 and row["codds_a"] == 4.60
+
+
+def test_upsert_fixtures_skips_incomplete_rows(db):
+    assert db.upsert_fixtures([{"league": "T1", "home": "A"}]) == 0
+    assert db.upsert_fixtures([]) == 0
+
+
+def test_coverage_reports_configured_but_empty_leagues(db):
+    import json
+
+    db.upsert_matches([base_row()])
+    db.set_meta("missing_leagues", json.dumps(["T2"]))
+    coverage = db.coverage(["T1", "T2", "E0"])
+    assert coverage["present"] == {"T1": 1}
+    assert coverage["empty"] == ["T2", "E0"]
+    assert coverage["missing_from_source"] == ["T2"]

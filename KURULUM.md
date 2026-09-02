@@ -112,7 +112,16 @@ değilse "⏳ Model yükleniyor" der ve hazır olunca cevap verir.
 
 ## Bölüm 5 — Kullanım
 
-Telegram'da botunuzu açın ve şunları yazın.
+Telegram'da botunuzu açın. **Komut ezberlemenize gerek yok:**
+
+- Mesaj kutusunun altında **kısayol tuşları** çıkar:
+  `📅 Bu Hafta` · `🎫 Otomatik Kupon` · `⚖️ Bütçe Karşılaştır`
+  `📈 Karne` · `⚙️ Ayarlar` · `❓ Yardım`
+- Mesaj kutusundaki **menü butonuna** basınca tüm komutlar açıklamalarıyla listelenir.
+- `⚙️ Ayarlar` bütçe ve hedefi **tek dokunuşla** değiştirmenizi sağlar
+  (250 / 500 / 1.000 / 2.500 / 5.000 / 10.000 TL ve hedef 12–15).
+
+Tuşları görmüyorsanız bir kez `/start` yazın.
 
 ### 🔹 Haftanın tahminleri — `/hafta`
 
@@ -222,6 +231,42 @@ olur" sorusunun tam cevabı:
 
 Bu tablo dürüst olsun diye var. Bütçeyi 100 katına çıkarmak şansı 100 kat
 değil, yaklaşık 10–15 kat artırır.
+
+### 🔹 Bütçe karşılaştırma — `⚖️ Bütçe Karşılaştır`
+
+"Ne kadar koyayım" sorusunun cevabı. Aynı 15 maç için farklı bütçeleri yan yana
+gösterir:
+
+```
+▸ 500,00 TL · 96 kolon
+   9 tek · 5 çift · 1 üçlü
+   15/15: %0,397  ·  13+: %12,9  ·  12+: %31,5
+
+▸ 2.500,00 TL · 486 kolon
+   9 tek · 1 çift · 5 üçlü
+   15/15: %1,161  ·  13+: %23,8  ·  12+: %47,8
+```
+
+Bütçeyi 5 katına çıkarmak 13+ şansını 2 katına çıkarıyor — 5 katına değil.
+Karar sizin, ama rakamlar önünüzde.
+
+### 🔹 Kapsam — `/kapsam`
+
+Hangi liglerin verisi var, hangileri yok:
+
+```
+🗺️ KAPSAM
+Veri gelen ligler:
+   T1    Türkiye Süper Lig            3.400 maç
+   E0    İngiltere Premier League     4.180 maç
+   ...
+Kaynakta bulunmayan ligler:
+   ⛔ T2 — Türkiye 1. Lig
+```
+
+**TFF 1. Lig ücretsiz kaynaklarda yayınlanmıyor.** Spor Toto listesinde 1. Lig
+maçı çıkarsa "⚠️ sınırlı veri" olarak işaretlenir ve optimizasyon o maçlara
+öncelikle çift/üçlü verir. Sistem bunu gizlemez.
 
 ### 🔹 Hedef seçimi — `/hedef 13`
 

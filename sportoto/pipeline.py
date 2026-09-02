@@ -29,7 +29,7 @@ from .features.form import build_form_features
 from .models.dixon_coles import DixonColes, DixonColesFit
 from .models.elo_model import EloOrdinal
 from .models.form_model import FormModel, design_matrix
-from .models.market import market_frame
+from .models.market import DriftAdjustment, market_frame
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +72,7 @@ class ComponentModels:
     dc: dict[str, DixonColesFit] = field(default_factory=dict)
     elo: EloOrdinal = field(default_factory=EloOrdinal)
     form: FormModel = field(default_factory=FormModel)
+    drift: DriftAdjustment = field(default_factory=DriftAdjustment)
     dc_engine: DixonColes | None = None
 
     def leagues(self) -> list[str]:
@@ -124,6 +125,13 @@ def fit_components(
         models.form = FormModel().fit(
             design_matrix(labelled), labelled["y"].to_numpy(), weights
         )
+        # --- Oran hareketi ---
+        if {"mkt_h", "mkto_h"}.issubset(labelled.columns):
+            models.drift = DriftAdjustment().fit(
+                labelled[["mkt_h", "mkt_d", "mkt_a"]].to_numpy(dtype=float),
+                labelled[["mkto_h", "mkto_d", "mkto_a"]].to_numpy(dtype=float),
+                labelled["y"].to_numpy(),
+            )
     return models
 
 
@@ -169,6 +177,12 @@ def component_probabilities(
     market = np.full((n, 3), np.nan)
     if {"mkt_h", "mkt_d", "mkt_a"}.issubset(frame.columns):
         market = frame[["mkt_h", "mkt_d", "mkt_a"]].to_numpy(dtype=float)
+        # Açılıştan kapanışa kayma bilgi taşır; modele katılabiliyorsa katılır.
+        if models.drift.fitted and {"mkto_h", "mkto_d", "mkto_a"}.issubset(frame.columns):
+            usable = ~np.isnan(market).any(axis=1)
+            if usable.any():
+                opening = frame[["mkto_h", "mkto_d", "mkto_a"]].to_numpy(dtype=float)
+                market[usable] = models.drift.apply(market[usable], opening[usable])
     out["market"] = market
 
     # --- Form ---

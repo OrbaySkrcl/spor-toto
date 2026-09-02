@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -149,6 +150,59 @@ class Database:
             conn.executemany(sql, payload)
         return len(payload)
 
+    def upsert_fixtures(self, rows: Iterable[dict]) -> int:
+        """Yaklaşan maçları yazar; **açılış oranını korur**.
+
+        Oran hareketi (açılıştan kapanışa kayma) bilgi taşır: para hangi yöne
+        akıyor. Geçmiş veride kaynak hem açılış hem kapanış oranını verir; ama
+        yaklaşan maçlar için yalnızca "şu anki" oran vardır. Bu yüzden kendi
+        anlık görüntülerimizi tutarız:
+
+          * `odds_*`  — ilk gördüğümüz oran (açılış). Bir daha yazılmaz.
+          * `codds_*` — en son gördüğümüz oran (kapanışa en yakın). Her
+            güncellemede tazelenir.
+
+        Bu, geçmiş verideki açılış/kapanış düzeniyle birebir aynı anlama gelir,
+        dolayısıyla eğitimde öğrenilen hareket etkisi üretimde de geçerlidir.
+        """
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        payload = []
+        for row in rows:
+            if not (row.get("league") and row.get("date") and row.get("home") and row.get("away")):
+                continue
+            payload.append({
+                "match_id": make_match_id(row["league"], row["date"], row["home"], row["away"]),
+                "league": row["league"], "date": row["date"],
+                "home": row["home"], "away": row["away"],
+                "odds_h": row.get("odds_h"), "odds_d": row.get("odds_d"),
+                "odds_a": row.get("odds_a"),
+                "source": row.get("source"), "updated_at": now,
+            })
+        if not payload:
+            return 0
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO matches
+                    (match_id, league, date, home, away,
+                     odds_h, odds_d, odds_a, codds_h, codds_d, codds_a, source, updated_at)
+                VALUES
+                    (:match_id, :league, :date, :home, :away,
+                     :odds_h, :odds_d, :odds_a, :odds_h, :odds_d, :odds_a,
+                     :source, :updated_at)
+                ON CONFLICT(match_id) DO UPDATE SET
+                    codds_h = COALESCE(excluded.codds_h, matches.codds_h),
+                    codds_d = COALESCE(excluded.codds_d, matches.codds_d),
+                    codds_a = COALESCE(excluded.codds_a, matches.codds_a),
+                    odds_h  = COALESCE(matches.odds_h, excluded.odds_h),
+                    odds_d  = COALESCE(matches.odds_d, excluded.odds_d),
+                    odds_a  = COALESCE(matches.odds_a, excluded.odds_a),
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+        return len(payload)
+
     def set_meta(self, key: str, value: str) -> None:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self.connect() as conn:
@@ -272,6 +326,22 @@ class Database:
                 "odds_a": row.get("odds_a"),
             }
         return index
+
+    def coverage(self, configured: list[str] | None = None) -> dict:
+        """Hangi liglerde veri var, hangilerinde yok.
+
+        Kullanıcının "bu maç neden zayıf tahmin edildi" sorusunu tahmine
+        bırakmamak için: yapılandırılmış ama verisi gelmemiş ligler açıkça
+        listelenir.
+        """
+        stats = self.stats()
+        present = {row["league"]: row["n"] for row in stats["per_league"]}
+        configured = [c.upper() for c in (configured or [])]
+        return {
+            "present": present,
+            "empty": [c for c in configured if not present.get(c)],
+            "missing_from_source": json.loads(self.get_meta("missing_leagues", "[]")),
+        }
 
     # -- tahmin geçmişi ---------------------------------------------------
     def save_predictions(self, rows: Iterable[dict], model: str = "blend") -> int:

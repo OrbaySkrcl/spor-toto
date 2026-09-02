@@ -24,6 +24,7 @@ import pandas as pd
 
 from .config import Settings
 from .models.blend import LogPoolBlend
+from .models.calibration import VectorScaling
 from .pipeline import (
     COMPONENTS,
     ComponentModels,
@@ -114,6 +115,7 @@ class Predictor:
         self.frame: pd.DataFrame | None = None
         self.models: ComponentModels | None = None
         self.blend = LogPoolBlend()
+        self.calibrator = VectorScaling()
         self.resolver: TeamResolver | None = None
         self.calibration: dict = {}
 
@@ -163,8 +165,15 @@ class Predictor:
                 self.blend = LogPoolBlend().fit(
                     stack_components(rows), rows["y"].to_numpy()
                 )
+                # Sınıf bazlı kayma düzeltmesi blend'in üstüne oturur; en çok
+                # beraberlikte fayda sağlar ve kupon dağılımını doğrudan etkiler.
+                self.calibrator = VectorScaling().fit(
+                    self.blend.predict(stack_components(rows)), rows["y"].to_numpy()
+                )
                 report["calibration_matches"] = int(len(rows))
                 report["blend"] = self.blend.to_dict()
+                report["class_calibration"] = self.calibrator.to_dict()
+                log.info(self.calibrator.describe())
                 log.info("Blend kalibre edildi (%d maç): %s", len(rows), self.blend.describe())
             else:
                 log.warning("Kalibrasyon için yeterli maç yok (%d); eşit ağırlık", len(rows))
@@ -177,6 +186,9 @@ class Predictor:
 
         self.models = fit_components(played, self.settings, as_of, leagues=leagues)
         report["dc_leagues"] = self.models.leagues()
+        report["drift"] = self.models.drift.to_dict()
+        if self.models.drift.fitted:
+            log.info(self.models.drift.describe())
         report["as_of"] = str(as_of.date())
 
         self.resolver = TeamResolver(self.db.known_teams(leagues))
@@ -201,7 +213,10 @@ class Predictor:
                 stack_components(train_rows), train_rows["y"].to_numpy(),
                 fit_profiles=False,
             )
-            probs = probe.predict(stack_components(test_rows))
+            probe_cal = VectorScaling().fit(
+                probe.predict(stack_components(train_rows)), train_rows["y"].to_numpy()
+            )
+            probs = probe_cal.apply(probe.predict(stack_components(test_rows)))
         except Exception as exc:
             log.warning("Başarı ölçümü yapılamadı: %s", exc)
             return {}
@@ -310,7 +325,7 @@ class Predictor:
         as_of = str(min(pd.Timestamp(r["date"]) for r in resolved).date())
         adjustments = self.db.active_adjustments(as_of)
         probs = component_probabilities(self.models, target, self.settings, adjustments)
-        blended = self.blend.predict(probs)
+        blended = self.calibrator.apply(self.blend.predict(probs))
         floor = self.settings.model.prob_floor
         blended = np.clip(blended, floor, None)
         blended = blended / blended.sum(axis=1, keepdims=True)
@@ -486,7 +501,11 @@ class Predictor:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
-                {"blend": self.blend.to_dict(), "calibration": self.calibration},
+                {
+                    "blend": self.blend.to_dict(),
+                    "class_calibration": self.calibrator.to_dict(),
+                    "calibration": self.calibration,
+                },
                 indent=2, ensure_ascii=False,
             ),
             encoding="utf-8",
@@ -499,5 +518,6 @@ class Predictor:
             return False
         data = json.loads(path.read_text(encoding="utf-8"))
         self.blend = LogPoolBlend.from_dict(data.get("blend", {}))
+        self.calibrator = VectorScaling.from_dict(data.get("class_calibration", {}))
         self.calibration = data.get("calibration", {})
         return True
