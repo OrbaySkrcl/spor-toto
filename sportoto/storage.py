@@ -251,6 +251,96 @@ class Database:
             df = df.dropna(subset=["date"]).reset_index(drop=True)
         return df
 
+    def upcoming_index(self, days: int = 30) -> dict:
+        """(ev, deplasman) -> yaklaşan maç kaydı.
+
+        Kullanıcı kupon listesini elle yapıştırdığında oran gelmez; oysa aynı
+        maçın güncel oranları `ingest` sırasında zaten indirilmiştir. Bu dizin
+        sayesinde yapıştırılan maç, saklanan fikstürle eşleştirilip oranları
+        (ve gerçek tarihi) kullanılabilir. Piyasa modelin en güçlü tek sinyali
+        olduğu için bu, tahmin kalitesinde en büyük tek kazanç.
+        """
+        fixtures = self.load_fixtures(days=days)
+        index = {}
+        for _, row in fixtures.iterrows():
+            index[(row["home"], row["away"])] = {
+                "match_id": row["match_id"],
+                "league": row["league"],
+                "date": row["date"],
+                "odds_h": row.get("odds_h"),
+                "odds_d": row.get("odds_d"),
+                "odds_a": row.get("odds_a"),
+            }
+        return index
+
+    # -- tahmin geçmişi ---------------------------------------------------
+    def save_predictions(self, rows: Iterable[dict], model: str = "blend") -> int:
+        """Tahminleri kaydeder ki sonradan gerçek sonuçlarla karşılaştırılabilsin.
+
+        Yalnızca veritabanındaki bir fikstüre bağlanabilen (yani `match_id`
+        taşıyan) tahminler saklanır; aksi hâlde sonuç geldiğinde eşleştirme
+        yapılamaz ve kayıt işe yaramaz.
+        """
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        payload = [
+            {
+                "match_key": r["match_id"],
+                "created_at": now,
+                "p_home": float(r["p_home"]),
+                "p_draw": float(r["p_draw"]),
+                "p_away": float(r["p_away"]),
+                "model": model,
+            }
+            for r in rows
+            if r.get("match_id")
+        ]
+        if not payload:
+            return 0
+        with self.connect() as conn:
+            conn.executemany(
+                "INSERT INTO predictions(match_key, created_at, p_home, p_draw, p_away, model) "
+                "VALUES(:match_key, :created_at, :p_home, :p_draw, :p_away, :model) "
+                "ON CONFLICT(match_key, created_at, model) DO NOTHING",
+                payload,
+            )
+        return len(payload)
+
+    def prediction_history(self, limit: int = 500):
+        """Kaydedilmiş tahminleri gerçekleşen sonuçlarla birleştirir.
+
+        Her maç için en son yapılan tahmin kullanılır.
+        """
+        import pandas as pd
+
+        sql = """
+            SELECT p.match_key, p.created_at, p.p_home, p.p_draw, p.p_away,
+                   m.league, m.date, m.home, m.away, m.ftr
+            FROM predictions p
+            JOIN matches m ON m.match_id = p.match_key
+            WHERE m.ftr IS NOT NULL
+              AND p.created_at = (
+                    SELECT MAX(p2.created_at) FROM predictions p2
+                    WHERE p2.match_key = p.match_key AND p2.model = p.model
+              )
+            ORDER BY m.date DESC
+            LIMIT ?
+        """
+        with self.connect() as conn:
+            df = pd.read_sql_query(sql, conn, params=[int(limit)])
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"]).reset_index(drop=True)
+        return df
+
+    def pending_prediction_count(self) -> int:
+        """Kaydedilmiş ama henüz oynanmamış maç sayısı."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT p.match_key) n FROM predictions p "
+                "JOIN matches m ON m.match_id = p.match_key WHERE m.ftr IS NULL"
+            ).fetchone()
+        return row["n"] or 0
+
     # -- Telegram aboneleri ----------------------------------------------
     def add_subscriber(self, chat_id: int) -> None:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")

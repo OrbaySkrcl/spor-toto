@@ -475,3 +475,42 @@ def format_tables_mobile(column_price: float) -> str:
         "üçlü işaretlemeler çarpar.</i>"
     )
     return "\n".join(lines)
+
+
+def format_track_record(record: dict) -> str:
+    """Kaydedilen tahminlerin gerçekleşen sonuçlara karşı performansı.
+
+    Backtest "geçmişte olsaydı ne olurdu" der; bu ise sistemin **bu kurulumda,
+    bu kullanıcı için** ürettiği tahminlerin gerçek karnesidir.
+    """
+    if not record or not record.get("n"):
+        pending = (record or {}).get("pending", 0)
+        text = "Henüz sonucu belli olan tahmin yok."
+        if pending:
+            text += f"\n{pending} tahmin sonuç bekliyor."
+        text += (
+            "\n\nTahminler /hafta ve kupon komutlarıyla kaydedilir; maçlar "
+            "oynanıp veri güncellendikçe burada karneniz oluşur."
+        )
+        return text
+
+    lines = ["📈 <b>GERÇEK KARNE</b>", ""]
+    lines.append(f"Dönem: {record['first_date']} → {record['last_date']}")
+    lines.append(f"Sonuçlanan tahmin: <b>{_tr_int(record['n'])}</b>")
+    if record.get("pending"):
+        lines.append(f"Sonuç bekleyen: {_tr_int(record['pending'])}")
+    lines.append("")
+    lines.append(f"Favori tutturma: <b>{_pct(record['favourite_hit_rate'], 1)}</b>")
+    lines.append(f"RPS: {record['rps']:.4f} · Log-loss: {record['log_loss']:.4f}")
+
+    bands = record.get("bands") or []
+    if bands:
+        lines.append("")
+        lines.append("<b>Güven bandına göre:</b>")
+        lines.append("<i>Model 'güçlü' derken gerçekten haklı mı?</i>")
+        for band in bands:
+            lines.append(
+                f"   {band['label']:<14} {band['n']:>4} maç · "
+                f"iddia {_pct(band['claimed'])} · gerçek <b>{_pct(band['hit_rate'])}</b>"
+            )
+    return "\n".join(lines)

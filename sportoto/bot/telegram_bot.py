@@ -37,6 +37,7 @@ from ..report import (
     format_predictions_mobile,
     format_quality,
     format_stats,
+    format_track_record,
     format_tables_mobile,
     format_weekly_mobile,
 )
@@ -57,6 +58,7 @@ Her hafta oynanacak maçlar için 1/0/2 olasılıkları üretir ve bütçenize g
 /hafta — bu haftanın maçları ve tahminleri
 /otomatik — en tahmin edilebilir 15 maçtan sistem kuponu
 /basari — modelin ölçülmüş isabet oranı
+/gecmis — gerçek karne (tahminleriniz vs sonuçlar)
 
 <b>Kendi kuponunuz için</b>
 1️⃣ <code>/butce 2000</code> ile bütçenizi ayarlayın
@@ -69,6 +71,7 @@ Her hafta oynanacak maçlar için 1/0/2 olasılıkları üretir ve bütçenize g
 /abone — haftalık tahminleri otomatik gönder
 /tahmin Takım A - Takım B — tek maç
 /kolon 576 — bütçe yerine kolon sınırı
+/hedef 13 — kaç doğruyu hedefleyelim (Spor Toto 12'den öder)
 /egri — bütçe / kazanma şansı eğrisi
 /eksik Takım -0.25 sebep — sakatlık düzeltmesi
 /tablo — kolon adedi ve bedel tabloları
@@ -87,6 +90,8 @@ class ChatState:
 
     budget: float | None = None
     columns: int | None = None
+    #: Optimizasyonun maksimize edeceği eşik. None = hepsi doğru (15/15).
+    target: int | None = None
     last_predictions: list = field(default_factory=list)
 
 
@@ -214,6 +219,10 @@ class SporTotoBot:
             self._cmd_auto_coupon(chat_id, state)
         elif command == "/basari":
             self._cmd_quality(chat_id)
+        elif command in {"/gecmis", "/karne"}:
+            self._cmd_history(chat_id)
+        elif command == "/hedef":
+            self._cmd_target(chat_id, state, argument)
         elif command == "/abone":
             self._cmd_subscribe(chat_id, True)
         elif command in {"/abonelikiptal", "/abonelik_iptal", "/durdur"}:
@@ -310,8 +319,10 @@ class SporTotoBot:
         if budget is None and state.columns is None:
             budget = self.settings.coupon.default_budget
         plan = optimize_coupon(
-            predictions, max_columns=state.columns, budget=budget, column_price=price
+            predictions, max_columns=state.columns, budget=budget,
+            column_price=price, target=state.target,
         )
+        predictor.record(predictions)
         self.send(chat_id, format_coupon_mobile(plan))
         if len(fixtures) != self.settings.coupon.n_matches:
             self.send(
@@ -340,6 +351,7 @@ class SporTotoBot:
                 "Bu arada kendi listenizi 15 satır hâlinde gönderebilirsiniz.",
             )
             return
+        predictor.record(predictions)
         self.send(chat_id, format_weekly_mobile(predictions))
         self.send(
             chat_id,
@@ -381,13 +393,47 @@ class SporTotoBot:
         if budget is None and state.columns is None:
             budget = self.settings.coupon.default_budget
         plan = optimize_coupon(
-            chosen, max_columns=state.columns, budget=budget, column_price=price
+            chosen, max_columns=state.columns, budget=budget,
+            column_price=price, target=state.target,
         )
+        predictor.record(chosen)
         self.send(chat_id, format_coupon_mobile(plan))
 
     def _cmd_quality(self, chat_id: int) -> None:
         predictor = self.ensure_model(chat_id)
         self.send(chat_id, format_quality(predictor.quality), monospace=True)
+
+    def _cmd_history(self, chat_id: int) -> None:
+        predictor = self.ensure_model(chat_id)
+        self.send(chat_id, format_track_record(predictor.track_record()))
+
+    def _cmd_target(self, chat_id: int, state: ChatState, argument: str) -> None:
+        """Optimizasyonun hangi eşiği maksimize edeceğini ayarlar."""
+        need = self.settings.coupon.n_matches
+        if not argument.strip():
+            current = state.target or need
+            self.send(
+                chat_id,
+                f"Güncel hedef: <b>en az {current} doğru</b>.\n\n"
+                f"Spor Toto 12'den itibaren ödeme yapar; makul bütçelerde "
+                f"<code>/hedef 13</code> daha anlamlıdır.\n"
+                f"Hepsini tutturmaya oynamak için <code>/hedef {need}</code>.",
+            )
+            return
+        try:
+            target = int(argument.split()[0])
+        except ValueError:
+            self.send(chat_id, f"Sayı yazın: <code>/hedef 13</code> (1-{need})")
+            return
+        if not 1 <= target <= need:
+            self.send(chat_id, f"Hedef 1 ile {need} arasında olmalı.")
+            return
+        state.target = target
+        note = (
+            " Kupon artık hepsini tutturmaya değil, bu eşiği geçmeye göre "
+            "dağıtılacak." if target < need else ""
+        )
+        self.send(chat_id, f"✅ Hedef: <b>en az {target} doğru</b>.{note}")
 
     def _cmd_subscribe(self, chat_id: int, enable: bool) -> None:
         db = Database(self.settings.db_path)

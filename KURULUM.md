@@ -223,6 +223,39 @@ olur" sorusunun tam cevabı:
 Bu tablo dürüst olsun diye var. Bütçeyi 100 katına çıkarmak şansı 100 kat
 değil, yaklaşık 10–15 kat artırır.
 
+### 🔹 Hedef seçimi — `/hedef 13`
+
+Spor Toto **12'den itibaren** ödeme yapar. Varsayılan olarak sistem 15/15'i
+maksimize eder, ama makul bütçelerde bu gerçekçi değildir:
+
+```
+/hedef 13
+```
+
+Bundan sonra kupon, "hepsini tutturma" yerine "en az 13 tutturma" şansını
+maksimize edecek şekilde dağıtılır. Fark küçüktür ama bedavadır.
+`/hedef 15` ile eski davranışa dönersiniz.
+
+### 🔹 Gerçek karne — `/gecmis`
+
+Sistem yaptığı her tahmini kaydeder. Maçlar oynanıp veri güncellendikçe
+kendi karnesini çıkarır:
+
+```
+📈 GERÇEK KARNE
+Sonuçlanan tahmin: 240
+Favori tutturma: %53,3
+
+Güven bandına göre:
+   güçlü          82 maç · iddia %68 · gerçek %70
+   orta           95 maç · iddia %52 · gerçek %51
+   belirsiz/zayıf 63 maç · iddia %39 · gerçek %37
+```
+
+`/basari` geçmiş veriyle yapılan simülasyondur; `/gecmis` ise **size verdiği
+gerçek tahminlerin** karnesidir. "Güçlü" derken gerçekten haklı mı, burada
+görürsünüz. İlk haftalarda boş olur, doldukça anlamlanır.
+
 ### 🔹 Modelin başarısı — `/basari`
 
 ```
@@ -268,6 +301,8 @@ Sayı, takımın gol beklentisini ne kadar düşüreceğinizdir:
 | Komut | Ne yapar |
 |---|---|
 | `/durum` | Kaç maç var, veri ne kadar güncel |
+| `/hedef 13` | Kaç doğruyu hedefleyelim |
+| `/gecmis` | Gerçek karne |
 | `/tahmin Galatasaray - Fenerbahçe` | Tek maç tahmini |
 | `/tablo` | Kolon adedi ve kupon bedeli tabloları |
 | `/guncelle` | Veriyi hemen tazele ve modeli yeniden eğit |

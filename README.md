@@ -97,6 +97,7 @@ Beklenen isabet dağılımı:
 | `ingest` | Veri kaynağından maçları indirir (tekrar çalıştırmak güvenli) |
 | `train` | Modeli eğitir, blend ağırlıklarını kalibre eder, `data/blend.json`'a yazar |
 | `hafta` | Yaklaşan maçlar için haftalık tahminler (`--coupon` ile otomatik kupon) |
+| `gecmis` | Gerçek karne: kaydedilmiş tahminler vs gerçekleşen sonuçlar |
 | `basari` | Modelin ölçülmüş örnek dışı isabet oranı |
 | `predict dosya.txt` | Maç listesi için 1/0/2 olasılıkları |
 | `coupon dosya.txt --budget 2000` | Kuponu optimize eder |
@@ -260,6 +261,35 @@ penceresi zamana göre 70/30 bölünür, ağırlıklar ilk parçada öğrenilir,
 son parçada ölçülür, sonra ağırlıklar tüm pencereyle yeniden kestirilir.
 Kullanıcıya gösterilen yüzde bu ölçümden gelir.
 
+### Saklanan oranların yapıştırılan kupona bağlanması
+
+`ingest`, oynanmamış maçları güncel oranlarıyla indirir. Kullanıcı kupon
+listesini elle yapıştırdığında oran yoktur — ama aynı maç veritabanında
+duruyordur. Sistem yapıştırılan maçı saklanan fikstürle eşleştirip oranlarını
+(ve gerçek tarihini, kimliğini) kullanır.
+
+Ölçülen etkisi (oranlı veri, 576 kolonluk 140 kupon simülasyonu):
+13+ tutan kupon 34 → 41, 14+ tutan 7 → 11. Log-loss 0,9617 → 0,9504.
+
+### Hedef eşiği: 15/15 mi, 13 mü?
+
+Spor Toto 12'den itibaren ödeme yapar, dolayısıyla çoğu bütçede P(15/15)
+maksimize etmek yanlış amaçtır. `--target` / `/hedef` ile eşik seçilebilir.
+
+P(hepsi doğru) çarpanlarına ayrıldığı için tam DP ile çözülür. P(≥k) ise
+ayrılamaz; bunun için bütçeye sığan **baskın olmayan** (ikili, üçlü)
+bileşimleri elenir, kalanlar için eşiğe özel açgözlü atama kurulur ve ikili
+takaslarla yerel arama yapılır. Tam DP çözümü de aday olduğu için sonuç ondan
+kötü olamaz. Küçük kuponlarda kaba kuvvetle karşılaştırıldığında 384
+senaryonun 383'ünde optimumu bulur (en kötü sapma %0,19).
+
+### Gerçek karne
+
+Üretilen her tahmin kaydedilir; maç oynanınca gerçek sonuçla eşleştirilir.
+`gecmis` / `/gecmis` bunu güven bandına göre kırar: model "güçlü" derken
+gerçekten haklı mı? Backtest "geçmişte olsaydı ne olurdu" der; karne ise bu
+kurulumun gerçek performansıdır.
+
 ### Eksik bileşene dayanıklılık — "profiller"
 
 Ağırlıklar, bahis oranlarının **her zaman mevcut olduğu** geçmiş veride
@@ -396,7 +426,7 @@ tutucudur — güncel değeri kontrol edip ayarlayın.
 
 ```bash
 pip install -r requirements.txt pytest
-python -m pytest tests/ -q          # 195 test
+python -m pytest tests/ -q          # 220 test
 ```
 
 Ağ olmadan çalışmak için sentetik kaynak yeterlidir:

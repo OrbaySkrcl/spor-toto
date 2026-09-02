@@ -21,6 +21,7 @@ from .report import (
     format_predictions,
     format_quality,
     format_stats,
+    format_track_record,
     format_tables,
     format_weekly,
 )
@@ -131,7 +132,9 @@ def cmd_coupon(args) -> int:
         budget=args.budget if args.columns is None else None,
         column_price=price,
         max_triples=args.max_triples,
+        target=args.target,
     )
+    predictor.record(predictions)
     print(format_coupon(plan))
     if args.frontier:
         print()
@@ -152,6 +155,7 @@ def cmd_week(args) -> int:
         )
         return 1
 
+    predictor.record(predictions)
     print(format_weekly(predictions))
     if predictor.quality:
         print()
@@ -174,6 +178,7 @@ def cmd_week(args) -> int:
             chosen, max_columns=args.columns,
             budget=args.budget if args.columns is None else None,
             column_price=settings.coupon.column_price,
+            target=args.target,
         )
         print(format_coupon(plan, "OTOMATİK SİSTEM KUPONU"))
     return 0
@@ -183,6 +188,17 @@ def cmd_quality(args) -> int:
     settings = _settings_from_args(args)
     predictor, _ = _load_predictor(settings, retrain=args.retrain, quiet=True)
     print(format_quality(predictor.quality))
+    return 0
+
+
+def cmd_history(args) -> int:
+    """Sistemin gerçek karnesi: kaydedilmiş tahminler vs gerçekleşen sonuçlar."""
+    import re
+
+    settings = _settings_from_args(args)
+    predictor, _ = _load_predictor(settings, retrain=False, quiet=True)
+    record = predictor.track_record(limit=args.limit)
+    print(re.sub(r"<[^>]+>", "", format_track_record(record)))
     return 0
 
 
@@ -325,6 +341,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--budget", type=float, help="bütçe (TL)")
     p.add_argument("--columns", type=int, help="kolon üst sınırı (bütçe yerine)")
     p.add_argument("--max-triples", type=int, help="en fazla kaç üçlü tahmin")
+    p.add_argument("--target", type=int,
+                   help="maksimize edilecek eşik (varsayılan 15 = hepsi doğru). "
+                        "Spor Toto 12'den öder; --target 13 farklı bir dağılım verir")
     p.add_argument("--components", action="store_true")
     p.add_argument("--frontier", action="store_true", help="bütçe/şans eğrisini yazdır")
     p.add_argument("--frontier-max", type=int, default=200_000, help="eğride en fazla kolon")
@@ -334,6 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("hafta", help="yaklaşan maçlar için haftalık tahminler")
     p.add_argument("--days", type=int, default=8, help="kaç gün ileriye bakılsın")
     p.add_argument("--coupon", action="store_true", help="otomatik sistem kuponu da kur")
+    p.add_argument("--target", type=int, help="otomatik kuponda maksimize edilecek eşik")
     p.add_argument("--budget", type=float, help="otomatik kupon bütçesi (TL)")
     p.add_argument("--columns", type=int, help="otomatik kupon kolon sınırı")
     p.add_argument("--retrain", action="store_true")
@@ -342,6 +362,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("basari", help="modelin ölçülmüş örnek dışı başarısı")
     p.add_argument("--retrain", action="store_true")
     p.set_defaults(func=cmd_quality)
+
+    p = sub.add_parser("gecmis", help="gerçek karne: geçmiş tahminler vs sonuçlar")
+    p.add_argument("--limit", type=int, default=500, help="en fazla kaç tahmin")
+    p.set_defaults(func=cmd_history)
 
     p = sub.add_parser("backtest", help="sızıntısız yürüyen backtest")
     p.add_argument("--start", help="değerlendirme başlangıcı (YYYY-MM-DD)")

@@ -67,6 +67,9 @@ class MatchPrediction:
     matched_away: str | None = None
     match_confidence: float = 1.0
     date: str | None = None
+    #: Veritabanındaki fikstürle eşleştiyse o maçın kimliği. Tahmin geçmişini
+    #: gerçek sonuçlarla karşılaştırabilmek için gerekir.
+    match_id: str | None = None
     #: Hiçbir model bileşeni bu maça uygulanamadıysa True. Olasılıklar o zaman
     #: %33/%33/%33'tür ve bu bir tahmin değil, "bilmiyorum" demektir — çıktıda
     #: gerçek bir tahminmiş gibi gösterilmemelidir.
@@ -233,6 +236,7 @@ class Predictor:
                 "away": row["away"],
                 "league": row["league"],
                 "date": row["date"],
+                "match_id": row["match_id"],
                 "odds_h": _clean(row.get("odds_h")),
                 "odds_d": _clean(row.get("odds_d")),
                 "odds_a": _clean(row.get("odds_a")),
@@ -242,6 +246,7 @@ class Predictor:
         predictions = self.predict(payload)
         for prediction, (_, row) in zip(predictions, fixtures.iterrows()):
             prediction.date = row["date"].date().isoformat()
+            prediction.match_id = row["match_id"]
         return predictions
 
     def _default_blend(self) -> None:
@@ -335,6 +340,12 @@ class Predictor:
                     components=components,
                     matched_home=row["home"],
                     matched_away=row["away"],
+                    match_id=row.get("_match_id"),
+                    date=(
+                        pd.Timestamp(row["date"]).date().isoformat()
+                        if row.get("date") is not None
+                        else None
+                    ),
                     match_confidence=row.get("_confidence", 1.0),
                     no_data=not components,
                     low_data=bool(components)
@@ -349,6 +360,9 @@ class Predictor:
         if self.resolver is None:
             self.resolver = TeamResolver(self.db.known_teams())
         team_league = self.db.team_leagues()
+        # Yapıştırılan listede oran yoktur; aynı maçın güncel oranları
+        # veritabanında duruyorsa oradan alınır.
+        upcoming = self.db.upcoming_index()
         assert self.frame is not None
         default_date = self.frame["date"].max() + timedelta(days=1)
 
@@ -379,22 +393,92 @@ class Predictor:
 
             league = fixture.get("league") or team_league.get(home) or team_league.get(away)
             date = fixture.get("date")
+            odds = (fixture.get("odds_h"), fixture.get("odds_d"), fixture.get("odds_a"))
+            match_id = fixture.get("match_id")
+
+            stored = upcoming.get((home, away))
+            if stored is not None:
+                match_id = match_id or stored["match_id"]
+                league = league or stored["league"]
+                if date is None:
+                    date = stored["date"]
+                if all(v is None for v in odds):
+                    odds = (stored["odds_h"], stored["odds_d"], stored["odds_a"])
+                    if odds[0] is not None:
+                        notes.append(
+                            f"{home} - {away}: güncel bahis oranları kullanıldı"
+                        )
+
             rows.append(
                 {
                     "league": league,
                     "season": None,
-                    "date": pd.Timestamp(date) if date else default_date,
+                    "date": pd.Timestamp(date) if date is not None else default_date,
                     "home": home,
                     "away": away,
-                    "odds_h": fixture.get("odds_h"),
-                    "odds_d": fixture.get("odds_d"),
-                    "odds_a": fixture.get("odds_a"),
+                    "odds_h": _clean(odds[0]),
+                    "odds_d": _clean(odds[1]),
+                    "odds_a": _clean(odds[2]),
                     "_confidence": min(home_match.score, away_match.score),
                     "_unresolved": unresolved,
+                    "_match_id": match_id,
                 }
             )
             warnings.append(notes)
         return rows, warnings
+
+    def record(self, predictions: list[MatchPrediction]) -> int:
+        """Tahminleri geçmiş kaydına yazar (sonradan gerçek sonuçla ölçmek için)."""
+        return self.db.save_predictions(
+            [
+                {
+                    "match_id": p.match_id,
+                    "p_home": p.p_home,
+                    "p_draw": p.p_draw,
+                    "p_away": p.p_away,
+                }
+                for p in predictions
+            ]
+        )
+
+    def track_record(self, limit: int = 500) -> dict:
+        """Kaydedilmiş tahminlerin gerçekleşen sonuçlara karşı performansı."""
+        from .backtest import metrics
+        from .pipeline import outcome_index
+
+        history = self.db.prediction_history(limit=limit)
+        if history.empty:
+            return {"n": 0, "pending": self.db.pending_prediction_count()}
+
+        y = outcome_index(history["ftr"])
+        keep = y >= 0
+        history, y = history[keep].reset_index(drop=True), y[keep]
+        if not len(y):
+            return {"n": 0, "pending": self.db.pending_prediction_count()}
+
+        probs = history[["p_home", "p_draw", "p_away"]].to_numpy(dtype=float)
+        result = metrics(probs, y)
+        result["favourite_hit_rate"] = result.pop("accuracy")
+        result["first_date"] = str(history["date"].min().date())
+        result["last_date"] = str(history["date"].max().date())
+        result["pending"] = self.db.pending_prediction_count()
+
+        # Güven bandına göre kırılım: model "güçlü" derken gerçekten haklı mı?
+        confidence = probs.max(axis=1)
+        hit = probs.argmax(axis=1) == y
+        bands = []
+        for low, high, label in ((0.0, 0.45, "belirsiz/zayıf"), (0.45, 0.60, "orta"),
+                                 (0.60, 1.01, "güçlü")):
+            mask = (confidence >= low) & (confidence < high)
+            if mask.sum() >= 5:
+                bands.append({
+                    "label": label,
+                    "n": int(mask.sum()),
+                    "hit_rate": float(hit[mask].mean()),
+                    "claimed": float(confidence[mask].mean()),
+                })
+        result["bands"] = bands
+        return result
 
     # -- kalıcılık --------------------------------------------------------
     def save_blend(self, path: Path | None = None) -> Path:

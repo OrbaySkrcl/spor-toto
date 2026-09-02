@@ -153,3 +153,71 @@ def test_columns_for_rejects_impossible_input():
         columns_for(-1, 0)
     with pytest.raises(ValueError):
         columns_for(10, 10)
+
+
+# --- hedef eşiği (Spor Toto 12'den itibaren öder) ---
+def brute_force_threshold(probs_list, max_columns, goal):
+    """Tüm atamaları deneyerek en iyi P(≥goal) değerini bulur (yalnızca test)."""
+    from sportoto.coupon.optimizer import _threshold_probability
+
+    best = 0.0
+    for sizes in itertools.product((1, 2, 3), repeat=len(probs_list)):
+        if math.prod(sizes) > max_columns:
+            continue
+        covers = [
+            sum(sorted(probs, reverse=True)[:size])
+            for probs, size in zip(probs_list, sizes)
+        ]
+        best = max(best, _threshold_probability(covers, goal))
+    return best
+
+
+@pytest.mark.parametrize("n,goal", [(5, 3), (6, 4), (7, 5), (7, 6)])
+@pytest.mark.parametrize("budget", [2, 12, 36, 144])
+def test_threshold_search_is_near_optimal(n, goal, budget):
+    """P(≥k) çarpanlarına ayrılamadığı için arama sezgiseldir; optimuma çok yakın olmalı."""
+    for _ in range(3):
+        probs = [random_probs() for _ in range(n)]
+        plan = optimize_coupon(probs, max_columns=budget, target=goal)
+        exact = brute_force_threshold(probs, budget, goal)
+        assert plan.p_target <= exact + 1e-9          # optimumu aşamaz
+        assert plan.p_target >= exact * 0.99          # ondan belirgin geri kalamaz
+        assert plan.columns <= budget
+
+
+def test_threshold_optimum_is_never_worse_than_all_correct_solution():
+    """Hedefe göre optimize etmek, hepsi-doğru çözümünden kötü olamaz."""
+    for _ in range(8):
+        probs = [random_probs() for _ in range(15)]
+        for goal in (12, 13, 14):
+            all_correct = optimize_coupon(probs, max_columns=576, target=15)
+            targeted = optimize_coupon(probs, max_columns=576, target=goal)
+            assert targeted.probability_at_least(goal) >= (
+                all_correct.probability_at_least(goal) - 1e-12
+            )
+
+
+def test_default_target_is_all_correct_and_stays_exact():
+    probs = [random_probs() for _ in range(8)]
+    plan = optimize_coupon(probs, max_columns=96)
+    assert plan.target == 8
+    assert plan.p_target == pytest.approx(plan.p_all_correct)
+    assert plan.p_all_correct == pytest.approx(brute_force(probs, 96), abs=1e-12)
+
+
+def test_target_is_clamped_to_valid_range():
+    probs = [random_probs() for _ in range(15)]
+    assert optimize_coupon(probs, max_columns=24, target=99).target == 15
+    assert optimize_coupon(probs, max_columns=24, target=0).target == 1
+
+
+def test_maximal_allocations_prunes_dominated_combinations():
+    from sportoto.coupon.optimizer import _maximal_allocations
+
+    allocations = _maximal_allocations(15, 15, 96)
+    assert allocations
+    for doubles, triples in allocations:
+        assert columns_for(doubles, triples) <= 96
+        # Bütçeye sığan ve bunu her boyutta kapsayan başka bir bileşim olmamalı.
+        assert columns_for(doubles + 1, triples) > 96
+        assert columns_for(doubles, triples + 1) > 96

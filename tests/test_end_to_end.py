@@ -456,3 +456,119 @@ def test_mobile_renderers_are_readable_and_escape_html():
     # Dar ekran için: tablo satırları makul genişlikte kalmalı
     plain = [re.sub(r"<[^>]+>", "", line) for line in tables.splitlines()]
     assert max(len(line) for line in plain if line.startswith("   ")) < 60
+
+
+# --- saklanan oranların yapıştırılan kupona bağlanması ---
+def test_pasted_coupon_picks_up_stored_odds(trained):
+    """Elle yapıştırılan listede oran yoktur; veritabanındaki fikstürden alınmalı.
+
+    Piyasa modelin en güçlü tek sinyalidir ve `ingest` onu zaten indirir;
+    kullanmamak en büyük tek kalite kaybı olurdu.
+    """
+    from datetime import date, timedelta
+
+    _, predictor, _ = trained
+    soon = date.today() + timedelta(days=3)
+    predictor.db.upsert_matches([
+        {"league": "SYN1", "date": soon.isoformat(), "home": "Team A", "away": "Team B",
+         "odds_h": 1.40, "odds_d": 4.80, "odds_a": 7.50, "source": "test"},
+    ])
+    try:
+        # Oran verilmeden, yalnızca takım adlarıyla
+        prediction = predictor.predict([{"home": "Team A", "away": "Team B"}])[0]
+        assert "market" in prediction.components, "saklanan oran kullanılmadı"
+        assert prediction.match_id                     # fikstüre bağlandı
+        assert prediction.date == soon.isoformat()     # gerçek tarih alındı
+        assert any("bahis oranları kullanıldı" in w for w in prediction.warnings)
+        # Kısa oran (1.40) ev sahibini belirgin favori yapmalı
+        assert prediction.p_home > 0.55
+    finally:
+        with predictor.db.connect() as conn:
+            conn.execute("DELETE FROM matches WHERE source = 'test'")
+
+
+def test_explicit_odds_override_stored_ones(trained):
+    from datetime import date, timedelta
+
+    _, predictor, _ = trained
+    soon = date.today() + timedelta(days=3)
+    predictor.db.upsert_matches([
+        {"league": "SYN1", "date": soon.isoformat(), "home": "Team A", "away": "Team B",
+         "odds_h": 1.40, "odds_d": 4.80, "odds_a": 7.50, "source": "test"},
+    ])
+    try:
+        given = predictor.predict([
+            {"home": "Team A", "away": "Team B",
+             "odds_h": 9.00, "odds_d": 5.00, "odds_a": 1.35}
+        ])[0]
+        assert given.p_away > given.p_home       # verilen oran kazanmalı
+    finally:
+        with predictor.db.connect() as conn:
+            conn.execute("DELETE FROM matches WHERE source = 'test'")
+
+
+# --- gerçek karne ---
+def test_track_record_scores_saved_predictions_against_results(trained):
+    """Kaydedilen tahminler, maç oynanınca gerçek sonuçla karşılaştırılmalı."""
+    from datetime import date, timedelta
+
+    _, predictor, _ = trained
+    db = predictor.db
+    with db.connect() as conn:
+        conn.execute("DELETE FROM predictions")
+
+    assert predictor.track_record()["n"] == 0
+
+    soon = date.today() + timedelta(days=2)
+    db.upsert_matches([
+        {"league": "SYN1", "date": soon.isoformat(), "home": f"Team {c}",
+         "away": "Team P", "source": "test"}
+        for c in "ABCDEFGH"
+    ])
+    try:
+        predictions = predictor.upcoming(days=8)
+        assert len(predictions) >= 8
+        assert predictor.record(predictions) >= 8
+        # Henüz oynanmadı: karne boş ama bekleyen sayısı dolu
+        record = predictor.track_record()
+        assert record["n"] == 0
+        assert record["pending"] >= 8
+
+        # Sonuçlar gelsin
+        db.upsert_matches([
+            {"league": "SYN1", "date": soon.isoformat(), "home": f"Team {c}",
+             "away": "Team P", "fthg": 2, "ftag": 0, "ftr": "H", "source": "test"}
+            for c in "ABCDEFGH"
+        ])
+        record = predictor.track_record()
+        assert record["n"] >= 8
+        assert 0.0 <= record["favourite_hit_rate"] <= 1.0
+        assert record["first_date"] and record["last_date"]
+    finally:
+        with db.connect() as conn:
+            conn.execute("DELETE FROM matches WHERE source = 'test'")
+            conn.execute("DELETE FROM predictions")
+
+
+def test_predictions_without_match_id_are_not_recorded(trained):
+    """Fikstüre bağlanamayan tahmin kaydedilmemeli — sonucu asla eşleşmez."""
+    _, predictor, _ = trained
+    with predictor.db.connect() as conn:
+        conn.execute("DELETE FROM predictions")
+    predictions = predictor.predict([{"home": "Team A", "away": "Team B", "league": "SYN1"}])
+    assert predictions[0].match_id is None
+    assert predictor.record(predictions) == 0
+
+
+def test_track_record_report_renders():
+    from sportoto.report import format_track_record
+
+    assert "Henüz sonucu belli olan" in format_track_record({"n": 0, "pending": 3})
+    text = format_track_record({
+        "n": 120, "pending": 15, "first_date": "2026-01-01", "last_date": "2026-05-01",
+        "favourite_hit_rate": 0.533, "rps": 0.201, "log_loss": 0.988,
+        "bands": [{"label": "güçlü", "n": 40, "hit_rate": 0.70, "claimed": 0.68}],
+    })
+    assert "GERÇEK KARNE" in text
+    assert "%53,3" in text
+    assert "güçlü" in text

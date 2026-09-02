@@ -128,3 +128,34 @@ işe yaramıyordu.
 (geniş, hizalı) ve telefon (dar, sarmalı, kalın vurgulu) ayrı biçimlendirici
 hak eder. Doğru hesap, okunmayan bir biçimde teslim edilirse teslim edilmemiş
 sayılır.
+
+## 13. İndirilen veriyi kullanmayı unutma
+
+`ingest` yaklaşan maçların bahis oranlarını indiriyordu; blend'de piyasanın
+ağırlığı 0,83'tü. Ama kullanıcı kupon listesini yapıştırdığında oran hiç
+aranmıyordu — en güçlü sinyal, elde olmasına rağmen çöpe gidiyordu.
+Aynı şekilde `predictions` tablosu şemada vardı ama hiçbir yerden yazılmıyordu.
+
+**Ders:** "Veriyi topladım" ile "veriyi kullandım" arasında sessiz bir boşluk
+oluşabilir. Her veri kaynağı için "bu, hangi kod yolunda okunuyor?" sorusunu
+sor; cevabı yoksa ya bağla ya da toplamayı bırak. Şemaya tablo eklemek özellik
+değildir.
+
+## 14. Doğru amacı optimize ettiğinden emin ol
+
+Sistem P(15/15)'i maksimize ediyordu, oysa Spor Toto 12'den itibaren ödüyor.
+Kullanıcının gerçekten ulaşabileceği sonuç 12-13 iken, optimizasyon ulaşılamaz
+bir eşiğe göre dağıtım yapıyordu.
+
+**Ders:** Amaç fonksiyonu bir varsayımdır ve gözden geçirilmelidir. "Matematik
+doğru" ile "doğru matematiği yapıyoruz" aynı şey değil. Ölçtüğümde fark küçük
+çıktı (%0,5 puan) — bunu da dürüstçe söylemek, özelliği abartmaktan iyidir.
+
+## 15. Yerel arama her başlangıç noktasına uygulanmalı
+
+P(≥k) araması, tam DP'den gelen çözümü aday olarak alıyor ama ona yerel arama
+uygulamıyordu. 240 senaryonun 2'sinde optimumu kaçırma sebebi buydu: doğru
+cevap, DP çözümünün tek bir takas komşusundaydı.
+
+**Ders:** Bir sezgisel aramada "elimdeki iyi çözüm" de diğerleri gibi bir
+başlangıç noktasıdır. Onu iyileştirme adımından muaf tutma.
