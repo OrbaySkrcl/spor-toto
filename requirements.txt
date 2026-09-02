@@ -1,0 +1,8 @@
+# Çekirdek bağımlılıklar — kasıtlı olarak dar tutuldu.
+# scikit-learn/statsmodels yok: gereken modeller (Dixon-Coles, sıralı logit,
+# softmax regresyon) doğrudan scipy.optimize ile yazıldı. Bu, Railway'in
+# ücretsiz kotasında imaj boyutunu ve kurulum süresini düşük tutar.
+numpy>=1.26,<3
+pandas>=2.1,<3
+scipy>=1.11,<2
+requests>=2.31,<3

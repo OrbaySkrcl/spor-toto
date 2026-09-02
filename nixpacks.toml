@@ -1,0 +1,6 @@
+# Railway varsayılan Nixpacks derleyicisi için Python sürümünü sabitler.
+[phases.setup]
+nixPkgs = ["python311", "gcc"]
+
+[start]
+cmd = "python -m sportoto bot"
