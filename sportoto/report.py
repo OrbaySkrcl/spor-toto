@@ -139,6 +139,115 @@ def format_tables(column_price: float, max_doubles: int = 8, max_triples: int = 
     return "\n".join(lines)
 
 
+#: Güven seviyesi etiketleri — kullanıcı yüzdeyi yorumlayabilsin diye.
+_CONFIDENCE_BANDS = (
+    (0.75, "çok güçlü"),
+    (0.60, "güçlü"),
+    (0.48, "orta"),
+    (0.40, "zayıf"),
+    (0.00, "belirsiz"),
+)
+
+_TR_DAYS = ("Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar")
+_TR_MONTHS = (
+    "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+    "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık",
+)
+
+
+def confidence_label(p: float) -> str:
+    for threshold, label in _CONFIDENCE_BANDS:
+        if p >= threshold:
+            return label
+    return "belirsiz"
+
+
+def _tr_date(iso: str | None) -> str:
+    if not iso:
+        return "Tarih yok"
+    try:
+        from datetime import date
+
+        d = date.fromisoformat(str(iso)[:10])
+    except ValueError:
+        return str(iso)
+    return f"{d.day} {_TR_MONTHS[d.month - 1]} {_TR_DAYS[d.weekday()]}"
+
+
+def format_weekly(predictions, league_names: dict | None = None, show_odds: bool = False) -> str:
+    """Haftanın fikstürü: tarihe göre gruplanmış tahmin listesi.
+
+    Her maç için en olası sonuç ve o sonucun olasılığı ("güven") gösterilir;
+    listenin sonunda hepsini favoriye oynarsanız kaç maçı beklediğiniz yazar.
+    """
+    if not predictions:
+        return (
+            "Yaklaşan maç bulunamadı.\n"
+            "Veri kaynağı fikstürleri henüz yayınlamamış olabilir; "
+            "/guncelle ile tazeleyip tekrar deneyin."
+        )
+
+    league_names = league_names or {}
+    lines = [f"HAFTANIN TAHMİNLERİ ({len(predictions)} maç)", "═" * 76]
+
+    current_date = object()
+    for p in predictions:
+        if p.date != current_date:
+            current_date = p.date
+            lines.append("")
+            lines.append(f"▸ {_tr_date(p.date)}")
+            lines.append(f"  {'Maç':<36}{'1':>6}{'0':>6}{'2':>6}   {'Tahmin':>16}")
+            lines.append("  " + "─" * 72)
+        name = f"{p.home} - {p.away}"
+        if len(name) > 35:
+            name = name[:34] + "…"
+        verdict = f"{p.favourite} · %{p.confidence * 100:.0f} {confidence_label(p.confidence)}"
+        lines.append(
+            f"  {name:<36}{p.p_home:>6.0%}{p.p_draw:>6.0%}{p.p_away:>6.0%}   {verdict:>16}"
+        )
+
+    expected = sum(p.confidence for p in predictions)
+    lines.append("")
+    lines.append("═" * 76)
+    lines.append(
+        f"Hepsini favoriye oynarsanız beklenen doğru sayısı: "
+        f"{expected:.1f} / {len(predictions)}  (%{expected / len(predictions) * 100:.0f})"
+    )
+    warnings = [w for p in predictions for w in p.warnings]
+    if warnings:
+        lines.append("")
+        lines.append("⚠ " + "; ".join(dict.fromkeys(warnings))[:400])
+    return "\n".join(lines)
+
+
+def format_quality(quality: dict) -> str:
+    """Modelin ölçülmüş örnek dışı başarısı — "ne kadar güvenebilirim" cevabı."""
+    if not quality:
+        return (
+            "Model başarısı henüz ölçülmedi. /egit komutuyla eğitim yapıldığında "
+            "örnek dışı başarı oranı hesaplanır."
+        )
+    lines = ["MODEL BAŞARISI (örnek dışı ölçüm)", "─" * 50]
+    lines.append(f"Ölçüm dönemi   : {quality.get('first_date')} → {quality.get('last_date')}")
+    lines.append(f"Ölçülen maç    : {_tr_int(int(quality.get('n', 0)))}")
+    hit = quality.get("favourite_hit_rate")
+    if hit is not None:
+        lines.append(f"Favori tutturma: %{hit * 100:.1f}")
+    base = quality.get("baseline_hit_rate")
+    if base is not None:
+        lines.append(f"Referans (hep aynı sonucu oynamak): %{base * 100:.1f}")
+    if quality.get("rps") is not None:
+        lines.append(f"RPS            : {quality['rps']:.4f}  (düşük = iyi)")
+    if quality.get("log_loss") is not None:
+        lines.append(f"Log-loss       : {quality['log_loss']:.4f}  (rastgele = 1,0986)")
+    lines.append("")
+    lines.append(
+        "Not: 'favori tutturma' 15 maçın 15'ini bilme oranı değildir; tek maç\n"
+        "bazında en olası sonucun kaç kez tuttuğudur. 15/15 için /egri'ye bakın."
+    )
+    return "\n".join(lines)
+
+
 def format_stats(stats: dict) -> str:
     lines = ["VERİ DURUMU", "─" * 50]
     if not stats["matches"]:
@@ -149,6 +258,8 @@ def format_stats(stats: dict) -> str:
     lines.append(f"Lig sayısı      : {stats['leagues']}")
     coverage = stats["with_odds"] / stats["matches"] if stats["matches"] else 0.0
     lines.append(f"Oranlı maç      : {_tr_int(stats['with_odds'])} ({coverage:.0%})")
+    if stats.get("upcoming") is not None:
+        lines.append(f"Yaklaşan maç    : {_tr_int(stats['upcoming'])}")
     lines.append("")
     lines.append(f"{'Lig':<8}{'Maç':>9}   Son maç")
     for row in stats["per_league"][:25]:

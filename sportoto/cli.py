@@ -19,8 +19,10 @@ from .report import (
     format_coupon,
     format_frontier,
     format_predictions,
+    format_quality,
     format_stats,
     format_tables,
+    format_weekly,
 )
 from .storage import Database
 from .teams import TeamResolver, parse_coupon
@@ -134,6 +136,53 @@ def cmd_coupon(args) -> int:
     if args.frontier:
         print()
         print(format_frontier(budget_frontier(predictions, price, args.frontier_max), price))
+    return 0
+
+
+def cmd_week(args) -> int:
+    """Yaklaşan maçlar için tahmin listesi; istenirse otomatik kupon."""
+    settings = _settings_from_args(args)
+    predictor, _ = _load_predictor(settings, retrain=args.retrain, quiet=True)
+    predictions = predictor.upcoming(days=args.days)
+    if not predictions:
+        print(
+            "Yaklaşan maç bulunamadı. Veri kaynağı fikstürleri henüz yayınlamamış "
+            "olabilir; `sportoto ingest` ile tazeleyip tekrar deneyin.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(format_weekly(predictions))
+    if predictor.quality:
+        print()
+        print(format_quality(predictor.quality))
+
+    if args.coupon:
+        need = settings.coupon.n_matches
+        if len(predictions) < need:
+            print(f"\nOtomatik kupon için en az {need} maç gerekiyor.", file=sys.stderr)
+            return 0
+        chosen = sorted(predictions, key=lambda p: -p.confidence)[:need]
+        chosen.sort(key=lambda p: (p.date or "", p.home))
+        print()
+        print(
+            f"Not: aşağıdaki liste resmî Spor Toto kuponu değildir — yaklaşan "
+            f"maçlar arasından en tahmin edilebilir {need} tanesidir."
+        )
+        print()
+        plan = optimize_coupon(
+            chosen, max_columns=args.columns,
+            budget=args.budget if args.columns is None else None,
+            column_price=settings.coupon.column_price,
+        )
+        print(format_coupon(plan, "OTOMATİK SİSTEM KUPONU"))
+    return 0
+
+
+def cmd_quality(args) -> int:
+    settings = _settings_from_args(args)
+    predictor, _ = _load_predictor(settings, retrain=args.retrain, quiet=True)
+    print(format_quality(predictor.quality))
     return 0
 
 
@@ -281,6 +330,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--frontier-max", type=int, default=200_000, help="eğride en fazla kolon")
     p.add_argument("--retrain", action="store_true")
     p.set_defaults(func=cmd_coupon)
+
+    p = sub.add_parser("hafta", help="yaklaşan maçlar için haftalık tahminler")
+    p.add_argument("--days", type=int, default=8, help="kaç gün ileriye bakılsın")
+    p.add_argument("--coupon", action="store_true", help="otomatik sistem kuponu da kur")
+    p.add_argument("--budget", type=float, help="otomatik kupon bütçesi (TL)")
+    p.add_argument("--columns", type=int, help="otomatik kupon kolon sınırı")
+    p.add_argument("--retrain", action="store_true")
+    p.set_defaults(func=cmd_week)
+
+    p = sub.add_parser("basari", help="modelin ölçülmüş örnek dışı başarısı")
+    p.add_argument("--retrain", action="store_true")
+    p.set_defaults(func=cmd_quality)
 
     p = sub.add_parser("backtest", help="sızıntısız yürüyen backtest")
     p.add_argument("--start", help="değerlendirme başlangıcı (YYYY-MM-DD)")

@@ -58,6 +58,13 @@ CREATE TABLE IF NOT EXISTS adjustments (
     PRIMARY KEY (team, valid_from)
 );
 
+-- Haftalık tahminlerin otomatik gönderileceği Telegram sohbetleri.
+CREATE TABLE IF NOT EXISTS subscribers (
+    chat_id    INTEGER PRIMARY KEY,
+    added_at   TEXT,
+    last_sent  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS predictions (
     match_key   TEXT NOT NULL,           -- 'league|date|home|away'
     created_at  TEXT NOT NULL,
@@ -217,6 +224,66 @@ class Database:
             df = df.dropna(subset=["date"]).reset_index(drop=True)
         return df
 
+    def load_fixtures(self, days: int = 8, leagues: list[str] | None = None):
+        """Önümüzdeki `days` gün içindeki **oynanmamış** maçları döner.
+
+        Fikstürler `ingest` sırasında sonuçsuz maç olarak yazılır; oynandıktan
+        sonra aynı satır sonuçla güncellenir. Bu yüzden "oynanmamış" = `ftr`
+        boş demektir.
+        """
+        import pandas as pd
+        from datetime import date, timedelta
+
+        today = date.today()
+        clauses = ["ftr IS NULL", "date >= ?", "date <= ?"]
+        params: list = [today.isoformat(), (today + timedelta(days=days)).isoformat()]
+        if leagues:
+            clauses.append(f"league IN ({','.join('?' * len(leagues))})")
+            params.extend(leagues)
+        sql = (
+            f"SELECT * FROM matches WHERE {' AND '.join(clauses)} "
+            "ORDER BY date ASC, league ASC, home ASC"
+        )
+        with self.connect() as conn:
+            df = pd.read_sql_query(sql, conn, params=params)
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"]).reset_index(drop=True)
+        return df
+
+    # -- Telegram aboneleri ----------------------------------------------
+    def add_subscriber(self, chat_id: int) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO subscribers(chat_id, added_at) VALUES(?,?) "
+                "ON CONFLICT(chat_id) DO NOTHING",
+                (int(chat_id), now),
+            )
+
+    def remove_subscriber(self, chat_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM subscribers WHERE chat_id = ?", (int(chat_id),))
+
+    def subscribers(self) -> list[int]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT chat_id FROM subscribers").fetchall()
+        return [r["chat_id"] for r in rows]
+
+    def is_subscriber(self, chat_id: int) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM subscribers WHERE chat_id = ?", (int(chat_id),)
+            ).fetchone()
+        return row is not None
+
+    def mark_sent(self, chat_id: int) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE subscribers SET last_sent = ? WHERE chat_id = ?", (now, int(chat_id))
+            )
+
     def known_teams(self, leagues: list[str] | None = None) -> list[str]:
         clauses, params = [], []
         if leagues:
@@ -256,6 +323,9 @@ class Database:
                 "SELECT league, COUNT(*) n, MAX(date) last FROM matches "
                 "WHERE ftr IS NOT NULL GROUP BY league ORDER BY n DESC"
             ).fetchall()
+            upcoming = conn.execute(
+                "SELECT COUNT(*) n FROM matches WHERE ftr IS NULL AND date >= date('now')"
+            ).fetchone()
         return {
             "matches": row["n"] or 0,
             "first_date": row["d0"],
@@ -263,4 +333,5 @@ class Database:
             "leagues": row["nl"] or 0,
             "with_odds": row["with_odds"] or 0,
             "per_league": [dict(r) for r in per_league],
+            "upcoming": upcoming["n"] or 0,
         }

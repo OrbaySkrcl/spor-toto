@@ -7,6 +7,9 @@ dağılımını (hangi maça tekli, hangisine ikili, hangisine üçlü) hesaplar
 Telegram botu ve Railway dağıtımı dahil, **tamamen ücretsiz** kaynaklarla çalışır:
 API anahtarı gerekmez.
 
+> 👉 **Kod bilmiyorsanız [KURULUM.md](KURULUM.md) dosyasını okuyun** — adım adım,
+> terminal kullanmadan kurulum ve kullanım rehberi.
+
 ```
 15 maçlık liste ──► olasılık modeli ──► P(1),P(0),P(2) ──► bütçe kısıtlı
                     (DC + Elo + oran)                      optimizasyon ──► kupon
@@ -93,6 +96,8 @@ Beklenen isabet dağılımı:
 |---|---|
 | `ingest` | Veri kaynağından maçları indirir (tekrar çalıştırmak güvenli) |
 | `train` | Modeli eğitir, blend ağırlıklarını kalibre eder, `data/blend.json`'a yazar |
+| `hafta` | Yaklaşan maçlar için haftalık tahminler (`--coupon` ile otomatik kupon) |
+| `basari` | Modelin ölçülmüş örnek dışı isabet oranı |
 | `predict dosya.txt` | Maç listesi için 1/0/2 olasılıkları |
 | `coupon dosya.txt --budget 2000` | Kuponu optimize eder |
 | `backtest --start 2024-08-01` | Sızıntısız geçmişe dönük değerlendirme |
@@ -136,15 +141,17 @@ adını verin → size bir **jeton** (token) verir.
 ### 2. Railway'e dağıtın
 1. Bu depoyu GitHub'a itin.
 2. [railway.app](https://railway.app) → **New Project → Deploy from GitHub repo**.
-3. **Variables** sekmesinde şunları ekleyin:
+3. **Variables** sekmesinde **tek zorunlu** değişkeni ekleyin:
 
    | Değişken | Değer |
    |---|---|
    | `TELEGRAM_BOT_TOKEN` | BotFather'dan aldığınız jeton |
-   | `SPORTOTO_DATA_DIR` | `/data` |
-   | `SPORTOTO_COLUMN_PRICE` | Güncel kolon fiyatı (TL) |
+
+   İsteğe bağlı: `SPORTOTO_COLUMN_PRICE` (güncel kolon bedeli, varsayılan 5).
+   Diğer değişkenlerin hepsinin makul varsayılanı vardır.
 
 4. **Settings → Volumes** → yeni volume, mount path `/data`.
+   Bot bu diski **kendiliğinden bulur** (`SPORTOTO_DATA_DIR` gerekmez).
    Bu adımı atlarsanız bot her yeniden dağıtımda veriyi baştan indirir.
 5. Deploy. Bot ilk açılışta veriyi indirip modeli eğitir (birkaç dakika),
    sonra günde bir kez kendini otomatik günceller.
@@ -163,7 +170,17 @@ TLS sertifikası veya açık port gerekmez — Railway'de en ucuz çalışma bi�
 ```
 
 Bot olasılık tablosunu ve optimize edilmiş kuponu döndürür.
-Diğer komutlar: `/durum`, `/tahmin A - B`, `/egri`, `/tablo`, `/guncelle`, `/yardim`.
+
+Haftalık akış için resmî listeyi beklemenize gerek yok:
+
+| Komut | Ne yapar |
+|---|---|
+| `/hafta` | Önümüzdeki maçları bulur, hepsi için 1/0/2 olasılığı ve güven yüzdesi verir |
+| `/otomatik` | En tahmin edilebilir 15 maçtan sistem kuponu kurar |
+| `/basari` | Modelin ölçülmüş isabet oranını gösterir |
+| `/abone` | Haftalık tahminleri otomatik gönderir (varsayılan: Perşembe) |
+
+Diğerleri: `/durum`, `/tahmin A - B`, `/egri`, `/tablo`, `/eksik`, `/guncelle`, `/yardim`.
 
 ---
 
@@ -230,6 +247,18 @@ kaba kuvvetle (tüm 3ⁿ atama) birebir karşılaştırılarak doğrulanmıştı
 
 Doğru bilinen maç sayısının tam dağılımı (Poisson-binom) da hesaplanır; bu
 sayede `P(15/15)` kadar `P(≥13)` de raporlanabilir.
+
+### Haftalık fikstür akışı
+
+`ingest`, sonuçların yanında **oynanmamış maçları da** (güncel oranlarıyla)
+indirip veritabanına yazar. `hafta` / `/hafta` bunları okuyup tahmin eder;
+maç oynandığında aynı satır sonuçla güncellenir ve eğitim verisine katılır.
+Yani sistem elle müdahale olmadan haftadan haftaya kendini besler.
+
+Modelin isabet oranı her eğitimde **örnek dışı** ölçülür: kalibrasyon
+penceresi zamana göre 70/30 bölünür, ağırlıklar ilk parçada öğrenilir, başarı
+son parçada ölçülür, sonra ağırlıklar tüm pencereyle yeniden kestirilir.
+Kullanıcıya gösterilen yüzde bu ölçümden gelir.
 
 ### Sızıntı yok
 
@@ -334,7 +363,7 @@ tutucudur — güncel değeri kontrol edip ayarlayın.
 
 ```bash
 pip install -r requirements.txt pytest
-python -m pytest tests/ -q          # 160 test
+python -m pytest tests/ -q          # 180 test
 ```
 
 Ağ olmadan çalışmak için sentetik kaynak yeterlidir:

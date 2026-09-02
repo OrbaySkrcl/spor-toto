@@ -102,3 +102,72 @@ def test_stats_reports_odds_coverage(db):
     assert stats["matches"] == 2
     assert stats["with_odds"] == 1
     assert stats["leagues"] == 1
+
+
+def test_load_fixtures_returns_only_unplayed_matches_in_window(db):
+    from datetime import date, timedelta
+
+    today = date.today()
+    db.upsert_matches([
+        # oynanmış — dönmemeli
+        base_row(date=(today - timedelta(days=3)).isoformat()),
+        # yaklaşan — dönmeli
+        base_row(date=(today + timedelta(days=2)).isoformat(), home="Besiktas",
+                 fthg=None, ftag=None, ftr=None, odds_h=1.8, odds_d=3.6, odds_a=4.5),
+        # pencere dışı — dönmemeli
+        base_row(date=(today + timedelta(days=40)).isoformat(), home="Trabzonspor",
+                 fthg=None, ftag=None, ftr=None),
+    ])
+    fixtures = db.load_fixtures(days=8)
+    assert len(fixtures) == 1
+    assert fixtures.iloc[0]["home"] == "Besiktas"
+    assert fixtures.iloc[0]["odds_h"] == 1.8
+    assert len(db.load_fixtures(days=60)) == 2
+
+
+def test_load_fixtures_filters_by_league(db):
+    from datetime import date, timedelta
+
+    soon = (date.today() + timedelta(days=1)).isoformat()
+    db.upsert_matches([
+        base_row(date=soon, fthg=None, ftag=None, ftr=None),
+        base_row(league="E0", date=soon, home="Arsenal", away="Chelsea",
+                 fthg=None, ftag=None, ftr=None),
+    ])
+    assert len(db.load_fixtures(days=8, leagues=["E0"])) == 1
+    assert len(db.load_fixtures(days=8)) == 2
+
+
+def test_fixture_row_is_updated_when_match_is_played(db):
+    """Fikstür olarak yazılan satır, sonuç gelince aynı satır olarak güncellenmeli."""
+    from datetime import date, timedelta
+
+    soon = (date.today() + timedelta(days=1)).isoformat()
+    db.upsert_matches([base_row(date=soon, fthg=None, ftag=None, ftr=None,
+                                odds_h=1.9, odds_d=3.5, odds_a=4.0)])
+    assert len(db.load_fixtures(days=8)) == 1
+
+    db.upsert_matches([base_row(date=soon, fthg=3, ftag=1, ftr="H")])
+    assert len(db.load_fixtures(days=8)) == 0
+    played = db.load_matches()
+    assert len(played) == 1
+    assert played.iloc[0]["odds_h"] == 1.9      # oran korunmalı
+
+
+def test_subscriber_management(db):
+    assert db.subscribers() == []
+    db.add_subscriber(111)
+    db.add_subscriber(111)          # tekrar eklemek çoğaltmamalı
+    db.add_subscriber(222)
+    assert sorted(db.subscribers()) == [111, 222]
+    assert db.is_subscriber(111)
+    assert not db.is_subscriber(999)
+
+    db.mark_sent(111)
+    with db.connect() as conn:
+        row = conn.execute("SELECT last_sent FROM subscribers WHERE chat_id=111").fetchone()
+    assert row["last_sent"]
+
+    db.remove_subscriber(111)
+    assert db.subscribers() == [222]
+    db.remove_subscriber(999)       # olmayanı silmek hata vermemeli

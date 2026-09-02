@@ -41,6 +41,18 @@ log = logging.getLogger(__name__)
 OUTCOME_LABELS = ("1", "0", "2")
 
 
+def _clean(value):
+    """NaN/None değerleri None'a indirger (pandas satırlarından okurken gerekir)."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return float(value)
+
+
 @dataclass
 class MatchPrediction:
     home: str
@@ -54,6 +66,7 @@ class MatchPrediction:
     matched_home: str | None = None
     matched_away: str | None = None
     match_confidence: float = 1.0
+    date: str | None = None
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -63,6 +76,11 @@ class MatchPrediction:
     @property
     def favourite(self) -> str:
         return OUTCOME_LABELS[int(np.argmax(self.probs))]
+
+    @property
+    def confidence(self) -> float:
+        """En olası sonucun olasılığı — "bu tahmine ne kadar güveniyoruz"."""
+        return float(max(self.probs))
 
     @property
     def entropy(self) -> float:
@@ -109,6 +127,10 @@ class Predictor:
             raise RuntimeError("Oynanmış maç yok.")
 
         as_of = played["date"].max() + timedelta(days=1)
+        # Kalibrasyon atlanırsa (kayıtlı blend yeniden kullanılıyorsa) daha önce
+        # ölçülmüş başarı rakamını koru — yoksa `basari` komutu, aslında ölçüm
+        # yapılmış olmasına rağmen "ölçülmedi" der.
+        previous_quality = self.calibration.get("quality") if self.calibration else None
         report: dict = {
             "matches": int(len(played)),
             "leagues": sorted(played["league"].dropna().unique().tolist()),
@@ -121,9 +143,16 @@ class Predictor:
             rows = walk_forward(
                 played, self.settings, start=start, refit_days=refit_days, progress=progress
             )
-            rows = rows[rows["y"] >= 0]
+            rows = rows[rows["y"] >= 0].sort_values("date").reset_index(drop=True)
             if len(rows) >= 200:
-                self.blend.fit(stack_components(rows), rows["y"].to_numpy())
+                # Önce zamana göre 70/30 böl: ilk parçada ağırlıkları öğren,
+                # son parçada ölç. Böylece raporlanan başarı yüzdesi gerçekten
+                # örnek dışıdır — kullanıcıya söylediğimiz rakam dürüst olur.
+                report["quality"] = self._measure_quality(rows)
+                # Ölçüm bittikten sonra ağırlıkları tüm pencereyle yeniden fit et.
+                self.blend = LogPoolBlend().fit(
+                    stack_components(rows), rows["y"].to_numpy()
+                )
                 report["calibration_matches"] = int(len(rows))
                 report["blend"] = self.blend.to_dict()
                 log.info("Blend kalibre edildi (%d maç): %s", len(rows), self.blend.describe())
@@ -133,6 +162,9 @@ class Predictor:
         else:
             self._default_blend()
 
+        if not report.get("quality") and previous_quality:
+            report["quality"] = previous_quality
+
         self.models = fit_components(played, self.settings, as_of, leagues=leagues)
         report["dc_leagues"] = self.models.leagues()
         report["as_of"] = str(as_of.date())
@@ -140,6 +172,69 @@ class Predictor:
         self.resolver = TeamResolver(self.db.known_teams(leagues))
         self.calibration = report
         return report
+
+    def _measure_quality(self, rows: pd.DataFrame) -> dict:
+        """Örnek dışı başarı ölçer: zamana göre 70/30 böl, sonda değerlendir.
+
+        Kullanıcıya "model ne kadar isabetli" diye söylenen rakamın, ağırlıkların
+        öğrenildiği veriden gelmemesi gerekir. Bu yüzden ölçüm ayrı bir dilimde
+        yapılır ve üretim ağırlıkları sonradan tüm pencereyle yeniden fit edilir.
+        """
+        from .backtest import metrics
+
+        split = int(len(rows) * 0.7)
+        train_rows, test_rows = rows.iloc[:split], rows.iloc[split:]
+        if len(test_rows) < 100:
+            return {}
+        try:
+            probe = LogPoolBlend().fit(
+                stack_components(train_rows), train_rows["y"].to_numpy()
+            )
+            probs = probe.predict(stack_components(test_rows))
+        except Exception as exc:
+            log.warning("Başarı ölçümü yapılamadı: %s", exc)
+            return {}
+
+        result = metrics(probs, test_rows["y"].to_numpy())
+        result["favourite_hit_rate"] = result.pop("accuracy")
+        result["first_date"] = str(test_rows["date"].min().date())
+        result["last_date"] = str(test_rows["date"].max().date())
+        # Referans: her maçta lig taban oranını oynamak.
+        base = np.bincount(train_rows["y"].to_numpy(), minlength=3) / len(train_rows)
+        result["baseline_hit_rate"] = float(base.max())
+        return result
+
+    @property
+    def quality(self) -> dict:
+        """En son ölçülen örnek dışı başarı (yoksa boş)."""
+        return self.calibration.get("quality", {})
+
+    # -- haftalık fikstür -------------------------------------------------
+    def upcoming(self, days: int = 8, leagues: list[str] | None = None) -> list[MatchPrediction]:
+        """Veritabanındaki oynanmamış maçlar için tahmin üretir.
+
+        Fikstürler `ingest` sırasında kaynaktan (güncel oranlarıyla birlikte)
+        indirilir; burada yalnızca okunup tahmine verilirler.
+        """
+        fixtures = self.db.load_fixtures(days=days, leagues=leagues)
+        if fixtures.empty:
+            return []
+        payload = [
+            {
+                "home": row["home"],
+                "away": row["away"],
+                "league": row["league"],
+                "date": row["date"],
+                "odds_h": _clean(row.get("odds_h")),
+                "odds_d": _clean(row.get("odds_d")),
+                "odds_a": _clean(row.get("odds_a")),
+            }
+            for _, row in fixtures.iterrows()
+        ]
+        predictions = self.predict(payload)
+        for prediction, (_, row) in zip(predictions, fixtures.iterrows()):
+            prediction.date = row["date"].date().isoformat()
+        return predictions
 
     def _default_blend(self) -> None:
         """Kalibrasyon yapılamadığında makul sabit ağırlıklar.
@@ -165,7 +260,10 @@ class Predictor:
         resolved, warnings_per_row = self._resolve_fixtures(fixtures)
         pending = pd.DataFrame(resolved)
         # Bekleyen maçları geçmişin sonuna ekleyip özellikleri nedensel üret.
-        history = self.frame[
+        # Geçmiş yalnızca **oynanmış** maçlardan oluşmalı: `self.frame` fikstürleri
+        # de içerir ve onlar `pending` olarak zaten eklenecektir; süzmezsek aynı
+        # maç iki kez görünür.
+        history = self.frame[self.frame["y"] >= 0][
             ["league", "season", "date", "home", "away", "fthg", "ftag", "ftr",
              "hst", "ast", "odds_h", "odds_d", "odds_a", "codds_h", "codds_d", "codds_a"]
         ].copy()

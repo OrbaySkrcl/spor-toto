@@ -35,8 +35,10 @@ from ..report import (
     format_coupon,
     format_frontier,
     format_predictions,
+    format_quality,
     format_stats,
     format_tables,
+    format_weekly,
 )
 from ..storage import Database
 from ..teams import parse_coupon
@@ -46,31 +48,37 @@ log = logging.getLogger(__name__)
 API = "https://api.telegram.org/bot{token}/{method}"
 MAX_MESSAGE = 3800  # Telegram sınırı 4096; <pre> etiketlerine pay bırakıldı
 
-WELCOME = """<b>Spor Toto Tahmin Botu</b>
+WELCOME = """<b>⚽ Spor Toto Tahmin Botu</b>
 
-15 maçlık kuponunuz için 1/0/2 olasılıkları üretir ve bütçenize göre
-<b>P(15/15)'i maksimize eden</b> sistem dağılımını hesaplar.
+Her hafta oynanacak maçlar için 1/0/2 olasılıkları üretir ve bütçenize göre
+<b>15/15 şansını maksimize eden</b> sistem kuponunu hesaplar.
 
-<b>Kullanım</b>
-1️⃣ Bütçenizi ayarlayın:  <code>/butce 2000</code>
+<b>En sık kullanacağınız üç komut</b>
+/hafta — bu haftanın maçları ve tahminleri
+/otomatik — en tahmin edilebilir 15 maçtan sistem kuponu
+/basari — modelin ölçülmüş isabet oranı
+
+<b>Kendi kuponunuz için</b>
+1️⃣ <code>/butce 2000</code> ile bütçenizi ayarlayın
 2️⃣ 15 maçı alt alta gönderin:
 <code>1. Galatasaray - Fenerbahçe
 2. Beşiktaş - Trabzonspor
 ...</code>
 
-<b>Komutlar</b>
-/durum — veri ve model durumu
+<b>Diğer komutlar</b>
+/abone — haftalık tahminleri otomatik gönder
 /tahmin Takım A - Takım B — tek maç
-/kolon 576 — kolon sınırı (bütçe yerine)
+/kolon 576 — bütçe yerine kolon sınırı
 /egri — bütçe / kazanma şansı eğrisi
-/eksik Takım -0.25 sebep — sakatlık/ceza düzeltmesi
-/tablo — kolon adedi ve kupon bedeli tabloları
+/eksik Takım -0.25 sebep — sakatlık düzeltmesi
+/tablo — kolon adedi ve bedel tabloları
+/durum — veri ve model durumu
 /guncelle — veriyi tazele, modeli yeniden eğit
-/yardim — bu mesaj
 
-⚠️ Bu bir olasılık aracıdır, kazanç garantisi değildir. Spor Toto'da 15/15
-tutturmak optimize edilmiş kuponlarda bile düşük olasılıklı bir olaydır;
-/egri komutu size gerçek rakamları gösterir."""
+⚠️ Bu bir olasılık aracıdır, kazanç garantisi değildir. 15/15 tutturmak
+optimize edilmiş kuponlarda bile düşük olasılıklı bir olaydır; /egri
+komutu size gerçek rakamları gösterir."""
+
 
 
 @dataclass
@@ -200,6 +208,16 @@ class SporTotoBot:
             self._cmd_frontier(chat_id, state)
         elif command == "/eksik":
             self._cmd_adjust(chat_id, argument)
+        elif command in {"/hafta", "/fikstur", "/fikstür"}:
+            self._cmd_week(chat_id, argument)
+        elif command in {"/otomatik", "/oto"}:
+            self._cmd_auto_coupon(chat_id, state)
+        elif command == "/basari":
+            self._cmd_quality(chat_id)
+        elif command == "/abone":
+            self._cmd_subscribe(chat_id, True)
+        elif command in {"/abonelikiptal", "/abonelik_iptal", "/durdur"}:
+            self._cmd_subscribe(chat_id, False)
         elif command == "/kupon":
             self._cmd_coupon(chat_id, state, argument)
         else:
@@ -301,6 +319,89 @@ class SporTotoBot:
                 f"ℹ️ {len(fixtures)} maç okundu; Spor Toto kuponu "
                 f"{self.settings.coupon.n_matches} maçtır.",
             )
+
+    def _cmd_week(self, chat_id: int, argument: str = "") -> None:
+        """Bu haftanın fikstürü ve tahminleri."""
+        days = 8
+        tokens = argument.split()
+        if tokens and tokens[0].isdigit():
+            days = max(1, min(int(tokens[0]), 30))
+
+        predictor = self.ensure_model(chat_id)
+        predictions = predictor.upcoming(days=days)
+        if not predictions:
+            self.send(
+                chat_id,
+                "Yaklaşan maç bulunamadı.\n\n"
+                "Olası nedenler:\n"
+                "• Veri kaynağı fikstürleri henüz yayınlamamış (genelde maçtan "
+                "birkaç gün önce açıklanır)\n"
+                "• Veri güncel değil → <code>/guncelle</code> deneyin\n\n"
+                "Bu arada kendi listenizi 15 satır hâlinde gönderebilirsiniz.",
+            )
+            return
+        self.send(chat_id, format_weekly(predictions), monospace=True)
+        self.send(
+            chat_id,
+            f"📋 <b>{len(predictions)} maç</b> tahmin edildi. "
+            "Sistem kuponu için <code>/otomatik</code>, "
+            "kendi listeniz için 15 maçı alt alta gönderin.",
+        )
+
+    def _cmd_auto_coupon(self, chat_id: int, state: ChatState) -> None:
+        """En tahmin edilebilir 15 yaklaşan maçtan sistem kuponu kurar."""
+        predictor = self.ensure_model(chat_id)
+        predictions = predictor.upcoming(days=8)
+        need = self.settings.coupon.n_matches
+        if len(predictions) < need:
+            self.send(
+                chat_id,
+                f"Otomatik kupon için en az {need} yaklaşan maç gerekiyor; "
+                f"şu an {len(predictions)} maç var. <code>/guncelle</code> deneyin "
+                "veya kendi listenizi gönderin.",
+            )
+            return
+
+        # En yüksek güvenli maçlar seçilir: 15/15 şansını en çok bunlar artırır.
+        chosen = sorted(predictions, key=lambda p: -p.confidence)[:need]
+        chosen.sort(key=lambda p: (p.date or "", p.home))
+        state.last_predictions = chosen
+
+        self.send(
+            chat_id,
+            "🤖 <b>Otomatik kupon</b>\n"
+            "Bu, resmî Spor Toto listesi <b>değildir</b> — yaklaşan maçlar "
+            f"arasından en tahmin edilebilir {need} tanesi seçildi. Resmî liste "
+            "için maçları alt alta gönderin.",
+        )
+        self.send(chat_id, format_predictions(chosen), monospace=True)
+
+        price = self.settings.coupon.column_price
+        budget = state.budget if state.columns is None else None
+        if budget is None and state.columns is None:
+            budget = self.settings.coupon.default_budget
+        plan = optimize_coupon(
+            chosen, max_columns=state.columns, budget=budget, column_price=price
+        )
+        self.send(chat_id, format_coupon(plan), monospace=True)
+
+    def _cmd_quality(self, chat_id: int) -> None:
+        predictor = self.ensure_model(chat_id)
+        self.send(chat_id, format_quality(predictor.quality), monospace=True)
+
+    def _cmd_subscribe(self, chat_id: int, enable: bool) -> None:
+        db = Database(self.settings.db_path)
+        if enable:
+            db.add_subscriber(chat_id)
+            day = _TR_WEEKDAYS[_weekly_day()]
+            self.send(
+                chat_id,
+                f"✅ Abone oldunuz. Haftalık tahminler her <b>{day}</b> "
+                "otomatik gönderilecek.\nİptal için /abonelikiptal",
+            )
+        else:
+            db.remove_subscriber(chat_id)
+            self.send(chat_id, "Abonelik iptal edildi. Tekrar açmak için /abone")
 
     def _cmd_adjust(self, chat_id: int, argument: str) -> None:
         """`/eksik Galatasaray -0.25 golcü sakat` — elle takım gücü düzeltmesi.
@@ -404,6 +505,53 @@ class SporTotoBot:
             except Exception:
                 log.exception("Otomatik güncelleme başarısız; bir sonraki turda denenecek")
 
+    # -- haftalık otomatik gönderim ---------------------------------------
+    def _weekly_push_loop(self) -> None:
+        """Abonelere haftada bir fikstür tahminlerini gönderir.
+
+        Yarım saatte bir uyanır, gün/saat penceresine bakar ve aboneye son
+        gönderimden 3 günden fazla geçtiyse yollar. Bu, yeniden başlatmalardan
+        sonra çift gönderimi de engeller (son gönderim tarihi diskte tutulur).
+        """
+        from datetime import datetime, timedelta, timezone
+
+        while True:
+            time.sleep(1800)
+            try:
+                now = datetime.now(timezone.utc)
+                if now.weekday() != _weekly_day() or now.hour != _weekly_hour():
+                    continue
+                db = Database(self.settings.db_path)
+                targets = db.subscribers()
+                if not targets:
+                    continue
+
+                predictor = self.ensure_model()
+                predictions = predictor.upcoming(days=8)
+                if not predictions:
+                    log.info("Haftalık gönderim atlandı: yaklaşan maç yok")
+                    continue
+                body = format_weekly(predictions)
+
+                for chat_id in targets:
+                    with db.connect() as conn:
+                        row = conn.execute(
+                            "SELECT last_sent FROM subscribers WHERE chat_id = ?", (chat_id,)
+                        ).fetchone()
+                    last = row["last_sent"] if row else None
+                    if last:
+                        try:
+                            if datetime.fromisoformat(last) > now - timedelta(days=3):
+                                continue
+                        except ValueError:
+                            pass
+                    self.send(chat_id, "📅 <b>Haftalık tahminler</b>")
+                    self.send(chat_id, body, monospace=True)
+                    db.mark_sent(chat_id)
+                log.info("Haftalık gönderim tamamlandı (%d abone)", len(targets))
+            except Exception:
+                log.exception("Haftalık gönderim başarısız; sonraki turda denenecek")
+
     # -- ana döngü --------------------------------------------------------
     def run(self) -> int:
         me = self._call("getMe")
@@ -414,6 +562,8 @@ class SporTotoBot:
 
         # Modeli arka planda önden yükle ki ilk komut beklemesin.
         threading.Thread(target=self.ensure_model, daemon=True).start()
+
+        threading.Thread(target=self._weekly_push_loop, daemon=True).start()
 
         interval = _auto_refresh_hours()
         if interval > 0:
@@ -435,6 +585,25 @@ class SporTotoBot:
                 message = update.get("message") or update.get("edited_message")
                 if message:
                     self.handle(message)
+
+
+_TR_WEEKDAYS = ("Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar")
+
+
+def _weekly_day() -> int:
+    """Haftalık gönderim günü (0 = Pazartesi). Varsayılan: Perşembe."""
+    try:
+        return max(0, min(int(os.environ.get("SPORTOTO_WEEKLY_DAY", "3")), 6))
+    except ValueError:
+        return 3
+
+
+def _weekly_hour() -> int:
+    """Haftalık gönderim saati (UTC). Varsayılan 09:00 UTC = 12:00 TR."""
+    try:
+        return max(0, min(int(os.environ.get("SPORTOTO_WEEKLY_HOUR", "9")), 23))
+    except ValueError:
+        return 9
 
 
 def _is_number(token: str) -> bool:
@@ -478,13 +647,42 @@ def _split(text: str, limit: int) -> list[str]:
     return chunks
 
 
+MISSING_TOKEN_BANNER = """
+╔══════════════════════════════════════════════════════════════════════╗
+║  KURULUM TAMAMLANMADI — TELEGRAM_BOT_TOKEN eksik                     ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+Bot çalışabilmek için bir Telegram jetonuna ihtiyaç duyar.
+
+  1. Telegram'da @BotFather ile konuşun, /newbot yazın.
+  2. Size verdiği uzun jetonu kopyalayın
+     (şuna benzer: 1234567890:AAF...).
+  3. Railway'de bu servise gidin → Variables sekmesi →
+     "New Variable" → isim: TELEGRAM_BOT_TOKEN, değer: jetonunuz → Add.
+  4. Railway servisi kendiliğinden yeniden başlatır.
+
+Başka hiçbir değişken zorunlu değildir; kalıcı disk (/data) bağlıysa
+kendiliğinden bulunur.
+
+Süreç burada bekliyor — jetonu ekleyip kaydedince yeniden başlayacaktır.
+"""
+
+
 def run_bot(settings: Settings, token: str | None = None) -> int:
-    token = token or os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    token = (token or os.environ.get("TELEGRAM_BOT_TOKEN", "")).strip()
     if not token:
-        log.error(
-            "Bot jetonu yok. TELEGRAM_BOT_TOKEN ortam değişkenini ayarlayın "
-            "veya --token ile verin."
-        )
-        return 1
+        # Çıkmak yerine beklemek bilinçli bir tercih: konteyner yöneticileri
+        # (Railway dahil) çöken süreci saniyede bir yeniden başlatır ve gerçek
+        # mesaj yüzlerce satırın altında kaybolur. Burada tek bir okunabilir
+        # yönerge basılır ve süreç sessizce bekler.
+        log.error(MISSING_TOKEN_BANNER)
+        while True:
+            time.sleep(3600)
+            if os.environ.get("TELEGRAM_BOT_TOKEN", "").strip():
+                log.info("Jeton bulundu, bot başlatılıyor.")
+                break
+        token = os.environ["TELEGRAM_BOT_TOKEN"].strip()
+
     settings.ensure_dirs()
+    log.info("Veri klasörü: %s", settings.data_dir)
     return SporTotoBot(settings, token).run()

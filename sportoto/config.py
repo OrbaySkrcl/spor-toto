@@ -149,11 +149,27 @@ class CouponConfig:
     max_columns: int = field(default_factory=lambda: _env_int("SPORTOTO_MAX_COLUMNS", 1_000_000))
 
 
+def _default_data_dir() -> Path:
+    """Veri klasörünü seçer.
+
+    Sıralama: `SPORTOTO_DATA_DIR` → bağlı bir kalıcı disk (Railway volume
+    tipik olarak `/data`) → yerel `data/`. Kalıcı diskin kendiliğinden
+    bulunması, Railway'de elle ayarlanması gereken değişken sayısını
+    azaltır: volume bağlandıysa veri oraya yazılır ve yeniden dağıtımlarda
+    kaybolmaz.
+    """
+    explicit = os.environ.get("SPORTOTO_DATA_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    for candidate in (Path("/data"), Path("/app/data")):
+        if candidate.is_dir() and os.access(candidate, os.W_OK):
+            return candidate
+    return Path("data")
+
+
 @dataclass
 class Settings:
-    data_dir: Path = field(
-        default_factory=lambda: Path(os.environ.get("SPORTOTO_DATA_DIR", "data")).expanduser()
-    )
+    data_dir: Path = field(default_factory=_default_data_dir)
     db_path: Path | None = None
     source: str = field(default_factory=lambda: os.environ.get("SPORTOTO_SOURCE", "footballdata"))
     leagues: list[str] = field(

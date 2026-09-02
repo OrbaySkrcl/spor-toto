@@ -239,3 +239,87 @@ def test_adjustment_outside_validity_window_is_ignored(trained):
     finally:
         with predictor.db.connect() as conn:
             conn.execute("DELETE FROM adjustments WHERE team = 'Team A'")
+
+
+# --- haftalık fikstür akışı ---
+def test_upcoming_predicts_stored_fixtures(trained):
+    """Veritabanına yazılan fikstürler tahmin edilmeli ve tarih taşımalı."""
+    from datetime import date, timedelta
+
+    settings, predictor, _ = trained
+    soon = date.today() + timedelta(days=2)
+    predictor.db.upsert_matches([
+        {"league": "SYN1", "date": soon.isoformat(), "home": "Team A", "away": "Team B",
+         "odds_h": 1.85, "odds_d": 3.60, "odds_a": 4.20, "source": "test"},
+        {"league": "SYN1", "date": soon.isoformat(), "home": "Team C", "away": "Team D",
+         "source": "test"},
+    ])
+    try:
+        predictions = predictor.upcoming(days=8)
+        assert len(predictions) == 2
+        for p in predictions:
+            assert p.date == soon.isoformat()
+            assert sum(p.probs) == pytest.approx(1.0, abs=1e-9)
+            assert 0.0 < p.confidence <= 1.0
+        # Oranı olan maçta piyasa bileşeni devreye girmeli, olmayanda girmemeli.
+        with_odds = next(p for p in predictions if p.home == "Team A")
+        without = next(p for p in predictions if p.home == "Team C")
+        assert "market" in with_odds.components
+        assert "market" not in without.components
+    finally:
+        with predictor.db.connect() as conn:
+            conn.execute("DELETE FROM matches WHERE source = 'test'")
+
+
+def test_upcoming_returns_empty_without_fixtures(trained):
+    _, predictor, _ = trained
+    assert predictor.upcoming(days=8) == []
+
+
+def test_training_reports_out_of_sample_quality(trained):
+    """Kullanıcıya gösterilen başarı yüzdesi ölçülmüş ve makul olmalı."""
+    _, predictor, report = trained
+    quality = report.get("quality", {})
+    assert quality, "eğitim örnek dışı başarı ölçmeli"
+    assert quality["n"] >= 100
+    assert 0.30 < quality["favourite_hit_rate"] < 0.80
+    assert quality["favourite_hit_rate"] > quality["baseline_hit_rate"]
+    assert 0.0 < quality["rps"] < 0.5
+    assert predictor.quality == quality
+
+
+def test_weekly_report_renders(trained):
+    from sportoto.predictor import MatchPrediction
+    from sportoto.report import confidence_label, format_quality, format_weekly
+
+    predictions = [
+        MatchPrediction("Galatasaray", "Fenerbahce", "T1", 0.55, 0.25, 0.20,
+                        date="2026-09-05"),
+        MatchPrediction("Besiktas", "Trabzonspor", "T1", 0.30, 0.28, 0.42,
+                        date="2026-09-06"),
+    ]
+    text = format_weekly(predictions)
+    assert "Galatasaray" in text
+    assert "5 Eylül" in text and "6 Eylül" in text
+    assert "beklenen doğru sayısı" in text
+    # 0.55 + 0.42 = 0.97 -> "1.0 / 2"
+    assert "1.0 / 2" in text
+
+    assert "Yaklaşan maç bulunamadı" in format_weekly([])
+    assert "henüz ölçülmedi" in format_quality({})
+    assert confidence_label(0.9) == "çok güçlü"
+    assert confidence_label(0.33) == "belirsiz"
+
+
+def test_quality_survives_blend_reuse(trained):
+    """Kayıtlı kalibrasyon yeniden kullanılırken başarı ölçümü kaybolmamalı."""
+    settings, predictor, report = trained
+    predictor.save_blend()
+
+    reloaded = Predictor(settings)
+    assert reloaded.load_blend()
+    reloaded.train(calibrate=False, progress=False)
+    assert reloaded.quality
+    assert reloaded.quality["favourite_hit_rate"] == pytest.approx(
+        report["quality"]["favourite_hit_rate"]
+    )

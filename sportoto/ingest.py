@@ -54,6 +54,11 @@ def ingest(
         except Exception as exc:
             log.warning("Fikstür çekilemedi: %s", exc)
             upcoming = []
+        # Kaynak tüm liglerin fikstürünü verir; yalnızca eğitilen ligleri
+        # saklarız. Aksi hâlde `hafta` komutu modelin hiç görmediği liglerden
+        # maç gösterir ve o maçlarda yalnızca zayıf bileşenler çalışır.
+        wanted = {code.upper() for code in leagues}
+        upcoming = [f for f in upcoming if (f.get("league") or "").upper() in wanted]
         if upcoming:
             # Fikstürleri sonuçsuz maç olarak yazarız; oynanınca sonuç dolar.
             db.upsert_matches(
